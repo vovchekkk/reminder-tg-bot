@@ -56,6 +56,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    BotCommand,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -198,7 +199,48 @@ class Database:
                 )
                 """
             )
+
+            # Таблица системных настроек (версия деплоя и т.д.)
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+                """
+            )
             conn.commit()
+
+    def get_system_setting(self, key: str) -> Optional[str]:
+        with self._lock, self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM system_settings WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return row["value"] if row else None
+
+    def set_system_setting(self, key: str, value: str):
+        with self._lock, self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO system_settings (key, value)
+                VALUES (?, ?)
+                """,
+                (key, value),
+            )
+            conn.commit()
+
+    def get_all_user_ids(self) -> List[int]:
+        with self._lock, self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT DISTINCT user_id FROM users
+                UNION
+                SELECT DISTINCT user_id FROM reminders
+                """
+            )
+            return [row[0] for row in cursor.fetchall() if row[0]]
 
     def get_user_timezone(self, user_id: int) -> str:
         with self._lock, self.get_connection() as conn:
@@ -837,6 +879,10 @@ router = Router()
 
 
 @router.message(CommandStart())
+@router.message(Command("menu"))
+@router.message(Command("refresh"))
+@router.message(Command("reset"))
+@router.message(F.text.lower().in_(["меню", "старт", "start", "обновить", "перезапуск"]))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
@@ -1741,6 +1787,18 @@ async def finalize_reminder_creation(
 
 
 # ---------------------------------------------------------
+# ОБРАБОТЧИК УСТАРЕВШИХ КНОПОК (ПОСЛЕ ОБНОВЛЕНИЯ / ДЕПЛОЯ)
+# ---------------------------------------------------------
+@router.callback_query()
+async def fallback_expired_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer(
+        "⏳ Это меню устарело после обновления бота.\nНажмите /start для открытия актуального меню.",
+        show_alert=True,
+    )
+
+
+# ---------------------------------------------------------
 # ФОНОВЫЙ ПЛАНИРОВЩИК (BACKGROUND WORKER)
 # ---------------------------------------------------------
 async def reminder_worker(bot: Bot):
@@ -1888,6 +1946,43 @@ async def main():
     )
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
+
+    # Регистрация команд бота в меню Telegram (кнопка «Меню» внизу слева)
+    try:
+        await bot.set_my_commands(
+            [
+                BotCommand(command="start", description="🔄 Главное меню / обновить"),
+                BotCommand(command="new", description="➕ Создать напоминание"),
+                BotCommand(command="list", description="📋 Мои напоминания"),
+                BotCommand(command="timezone", description="⚙️ Настройка часового пояса"),
+                BotCommand(command="help", description="ℹ️ Помощь и справка"),
+            ]
+        )
+        logger.info("Команды бота в меню Telegram успешно зарегистрированы.")
+    except Exception as cmd_err:
+        logger.warning(f"Не удалось установить команды бота: {cmd_err}")
+
+    # Автоматическое уведомление о деплое новой версии (обновляет клавиатуру в чате)
+    current_build = os.getenv("RENDER_GIT_COMMIT") or str(int(os.path.getmtime(__file__)))
+    last_build = db.get_system_setting("last_deployed_build")
+
+    if last_build != current_build:
+        db.set_system_setting("last_deployed_build", current_build)
+        if last_build is not None:
+            user_ids = db.get_all_user_ids()
+            for uid in user_ids:
+                try:
+                    await bot.send_message(
+                        chat_id=uid,
+                        text=(
+                            "🚀 <b>Бот успешно обновлён!</b>\n\n"
+                            "Все свежие изменения и кнопки меню обновлены 👇"
+                        ),
+                        reply_markup=get_main_keyboard(),
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception as notify_err:
+                    logger.warning(f"Не удалось отправить уведомление пользователю {uid}: {notify_err}")
 
     worker_task = asyncio.create_task(reminder_worker(bot))
 
