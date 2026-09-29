@@ -43,10 +43,11 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-from dotenv import load_dotenv
-
-# Загружаем переменные окружения из .env (если файл существует)
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # Aiogram 3
 from aiogram import Bot, Dispatcher, F, Router
