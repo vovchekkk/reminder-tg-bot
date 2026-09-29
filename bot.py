@@ -202,6 +202,12 @@ class Database:
                 return row["timezone"]
             return DEFAULT_TIMEZONE
 
+    def has_user_timezone(self, user_id: int) -> bool:
+        with self._lock, self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+            return cursor.fetchone() is not None
+
     def set_user_timezone(self, user_id: int, timezone_name: str):
         now_iso = datetime.now().isoformat()
         with self._lock, self.get_connection() as conn:
@@ -722,24 +728,34 @@ router = Router()
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    user_now = get_now_for_user(message.from_user.id)
-    user_tz = db.get_user_timezone(message.from_user.id)
+    user_id = message.from_user.id
+    user_now = get_now_for_user(user_id)
+    user_tz = db.get_user_timezone(user_id)
     now_str = user_now.strftime("%d.%m.%Y %H:%M")
 
-    text = (
-        f"👋 <b>Привет! Я бот-напоминалка с контролем выполнения!</b>\n\n"
-        f"Чтобы напоминания приходили строго вовремя, пожалуйста, <b>выберите ваш часовой пояс</b> из списка ниже:\n\n"
-        f"<i>(Сейчас установлен: <code>{user_tz}</code>, местное время: {now_str})</i>"
-    )
-    await message.answer(
-        text,
-        reply_markup=get_timezone_inline_keyboard(),
-        parse_mode=ParseMode.HTML,
-    )
-    await message.answer(
-        "Главное меню:",
-        reply_markup=get_main_keyboard(),
-    )
+    if not db.has_user_timezone(user_id):
+        text = (
+            f"👋 <b>Привет! Я бот-напоминалка с контролем выполнения!</b>\n\n"
+            f"Чтобы напоминания приходили строго вовремя, пожалуйста, <b>выберите ваш часовой пояс</b> из списка ниже:\n\n"
+            f"<i>(По умолчанию: <code>{user_tz}</code>, местное время: {now_str})</i>"
+        )
+        await message.answer(
+            text,
+            reply_markup=get_timezone_inline_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        text = (
+            f"👋 <b>Привет! Я бот-напоминалка с контролем выполнения!</b>\n\n"
+            f"🌍 Ваш часовой пояс: <code>{user_tz}</code>\n"
+            f"🕒 Местное время: <b>{now_str}</b>\n\n"
+            f"Используйте кнопки меню внизу для создания и управления напоминаниями 👇"
+        )
+        await message.answer(
+            text,
+            reply_markup=get_main_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
 
 
 @router.message(Command("help"))
@@ -813,15 +829,14 @@ async def process_timezone_button(callback: CallbackQuery, state: FSMContext):
     now_str = user_now.strftime("%d.%m.%Y %H:%M")
 
     await callback.answer("✅ Часовой пояс сохранён!", show_alert=True)
-    await callback.message.edit_text(
+    await callback.message.delete()
+    await callback.message.answer(
         f"✅ <b>Часовой пояс установлен:</b> <code>{val}</code>\n"
         f"🕒 Ваше местное время: <b>{now_str}</b>\n\n"
         f"🎉 Теперь все напоминания будут приходить строго по вашему времени!\n"
-        f"Нажмите <b>«➕ Создать напоминание»</b>, чтобы запланировать первую задачу.",
+        f"Нажмите кнопку <b>«➕ Создать напоминание»</b> ниже, чтобы добавить первую задачу 👇",
+        reply_markup=get_main_keyboard(),
         parse_mode=ParseMode.HTML,
-    )
-    await callback.message.answer(
-        "Главное меню:", reply_markup=get_main_keyboard()
     )
 
 
@@ -846,61 +861,6 @@ async def process_manual_tz_input(message: Message, state: FSMContext):
             f"⚠️ Не удалось распознать часовой пояс. Попробуйте еще раз (например, <code>+5</code> или <code>Europe/Moscow</code>):",
             parse_mode=ParseMode.HTML,
         )
-
-
-@router.message(F.text == "🔙 Назад в меню")
-async def back_to_menu(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Главное меню:", reply_markup=get_main_keyboard())
-
-
-# ---------------------------------------------------------
-# БЫСТРЫЙ ШАБЛОН: ФИЗРА (ПН И ПТ КАЖДЫЙ ЧАС)
-# ---------------------------------------------------------
-@router.message(F.text == "⚡ Физра (Пн, Пт каждый час)")
-async def create_preset_pe(message: Message, state: FSMContext):
-    await state.clear()
-    user_id = message.from_user.id
-    user_tz = db.get_user_timezone(user_id)
-
-    rem_id = db.add_reminder(
-        user_id=user_id,
-        text="Сделать тест по физре 🏃‍♂️",
-        reminder_type="recurring",
-        days_of_week="0,4",  # 0=Пн, 4=Пт
-        interval_minutes=60,  # каждый час
-        start_time="09:00",
-    )
-
-    text = (
-        f"🎉 <b>Напоминание успешно создано!</b>\n\n"
-        f"📌 <b>Текст:</b> Сделать тест по физре 🏃‍♂️\n"
-        f"📅 <b>Дни недели:</b> Понедельник, Пятница (Пн, Пт)\n"
-        f"⏰ <b>Частота повтора:</b> Каждый 1 час (пока не нажмёте ✅)\n"
-        f"🕐 <b>Время начала:</b> с 09:00 (по вашему поясу <code>{user_tz}</code>)\n\n"
-        f"Каждый час по Пн и Пт бот будет присылать напоминание с кнопкой ✅.\n"
-        f"Как только нажмёте — бот поздравит вас и остановится до следующего назначенного дня!"
-    )
-
-    quick_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🔔 Протестировать сейчас",
-                    callback_data=f"test_trigger:{rem_id}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📋 Мои напоминания", callback_data="refresh_list"
-                )
-            ],
-        ]
-    )
-
-    await message.answer(
-        text, reply_markup=quick_kb, parse_mode=ParseMode.HTML
-    )
 
 
 # ---------------------------------------------------------
