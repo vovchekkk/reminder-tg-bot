@@ -5,17 +5,17 @@ from aiogram import Bot, F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, Message
 
 from app.config import logger
 from app.database import db
 from app.domain.interfaces import IReminderRepository, IUserRepository
 from app.keyboards import get_done_keyboard, get_reminder_control_keyboard
+from app.services.presentation import ReminderPresenter
+from app.services.reminder_service import ReminderService
 from app.services.time_utils import (
     format_days_list,
-    format_interval,
     get_now_for_user,
-    safe_fromisoformat,
 )
 
 router = Router(name="reminders")
@@ -30,83 +30,12 @@ def render_reminders_list(
     r_repo = reminder_repo or db.reminders
     u_repo = user_repo or db.users
 
-    reminders = r_repo.get_user_reminders(user_id)
+    service = ReminderService(reminder_repo=r_repo, user_repo=u_repo)
+    presenter = ReminderPresenter()
+
+    reminders = service.get_user_reminders(user_id)
     user_now = get_now_for_user(user_id, u_repo)
-    user_today_str = user_now.strftime("%Y-%m-%d")
-
-    if not reminders:
-        return (
-            "📭 У вас пока нет созданных напоминаний.\n\n"
-            "Нажмите <b>«➕ Создать напоминание»</b>, чтобы запланировать первую задачу!",
-            None,
-        )
-
-    text = f"📋 <b>Ваши напоминания ({len(reminders)}):</b>\n\n"
-    buttons = []
-
-    for r in reminders:
-        status_icon = "🟢" if r["is_active"] else "⏸️"
-        if r["is_completed"]:
-            status_icon = "✅"
-
-        type_str = (
-            f"📅 {format_days_list(r['days_of_week'])}"
-            if r["reminder_type"] == "recurring"
-            else "⏱️ Одноразовое"
-        )
-        interval_str = format_interval(r["interval_minutes"])
-
-        short_title = r["text"][:30] + ("..." if len(r["text"]) > 30 else "")
-        text += (
-            f"{status_icon} <b>{html.escape(short_title)}</b>\n"
-            f"   • Тип: {type_str}\n"
-        )
-        if r["reminder_type"] == "recurring":
-            if r.get("interval_minutes", 60) == 0:
-                text += f"   • Режим: 1 раз в день в {r.get('start_time', '00:00')}\n"
-            else:
-                interval_str = format_interval(r["interval_minutes"])
-                text += f"   • Повтор: каждые {interval_str}\n"
-                start_s = r["start_time"] or "00:00"
-                end_s = f" до {r['end_time']}" if r.get("end_time") else ""
-                text += f"   • Время: с {start_s}{end_s}\n"
-        elif r["reminder_type"] == "one_time" and r["start_datetime"]:
-            try:
-                dt_obj = safe_fromisoformat(
-                    r["start_datetime"], tz_obj=user_now.tzinfo
-                )
-                if r.get("interval_minutes", 60) == 0:
-                    text += f"   • Режим: 1 раз ({dt_obj.strftime('%d.%m.%Y в %H:%M')})\n"
-                else:
-                    end_s = f" до {r['end_time']}" if r.get("end_time") else ""
-                    text += f"   • Дата: {dt_obj.strftime('%d.%m.%Y')} (с {dt_obj.strftime('%H:%M')}{end_s})\n"
-                    text += f"   • Повтор: каждые {interval_str}\n"
-            except Exception:
-                pass
-
-        if r["last_completed_date"] == user_today_str:
-            text += "   • <i>Сегодня уже выполнено 🎉</i>\n"
-
-        text += "\n"
-
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=f"{status_icon} {short_title}",
-                    callback_data=f"manage_rem:{r['id']}",
-                )
-            ]
-        )
-
-
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                text="➕ Создать новое", callback_data="start_wizard"
-            )
-        ]
-    )
-    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+    return presenter.render_list(reminders, user_now)
 
 
 @router.message(Command("list"))
@@ -154,58 +83,17 @@ async def callback_manage_reminder(
     r_repo = reminder_repo or db.reminders
     u_repo = user_repo or db.users
 
+    service = ReminderService(reminder_repo=r_repo, user_repo=u_repo)
+    presenter = ReminderPresenter()
+
     rem_id = int(callback.data.split(":")[1])
-    rem = r_repo.get_reminder(rem_id)
+    rem = service.get_reminder(rem_id)
     if not rem or rem["user_id"] != callback.from_user.id:
         await callback.answer("Напоминание не найдено.", show_alert=True)
         return
 
     user_now = get_now_for_user(callback.from_user.id, u_repo)
-    status = (
-        "🟢 Активно"
-        if rem["is_active"]
-        else ("✅ Завершено" if rem["is_completed"] else "⏸️ На паузе")
-    )
-    type_str = (
-        f"По дням недели ({format_days_list(rem['days_of_week'])})"
-        if rem["reminder_type"] == "recurring"
-        else "Одноразовое"
-    )
-
-    info = (
-        f"⚙️ <b>Управление напоминанием</b>\n\n"
-        f"📌 <b>Текст:</b> {html.escape(rem['text'])}\n"
-        f"📊 <b>Статус:</b> {status}\n"
-        f"🔁 <b>Тип:</b> {type_str}\n"
-    )
-    if rem["reminder_type"] == "recurring":
-        if rem.get("interval_minutes", 60) == 0:
-            info += f"⏰ <b>Режим:</b> 1 раз в день\n"
-            info += f"🕐 <b>Время напоминания:</b> в {rem.get('start_time', '00:00')}\n"
-        else:
-            info += f"⏰ <b>Интервал повтора:</b> каждые {format_interval(rem['interval_minutes'])}\n"
-            start_s = rem["start_time"] or "00:00"
-            end_s = f" до {rem['end_time']}" if rem.get("end_time") else ""
-            info += f"🕐 <b>Время показа:</b> с {start_s}{end_s}\n"
-    elif rem["reminder_type"] == "one_time" and rem["start_datetime"]:
-        try:
-            dt_obj = safe_fromisoformat(
-                rem["start_datetime"], tz_obj=user_now.tzinfo
-            )
-            if rem.get("interval_minutes", 60) == 0:
-                info += f"⏰ <b>Режим:</b> 1 раз в определенное время\n"
-                info += f"🕐 <b>Дата и время:</b> {dt_obj.strftime('%d.%m.%Y в %H:%M')}\n"
-            else:
-                info += f"📅 <b>Дата:</b> {dt_obj.strftime('%d.%m.%Y')}\n"
-                info += f"⏰ <b>Интервал повтора:</b> каждые {format_interval(rem['interval_minutes'])}\n"
-                start_s = dt_obj.strftime("%H:%M")
-                end_s = f" до {rem['end_time']}" if rem.get("end_time") else ""
-                info += f"🕐 <b>Время показа:</b> с {start_s}{end_s}\n"
-        except Exception:
-            pass
-
-    if rem["last_completed_date"] == user_now.strftime("%Y-%m-%d"):
-        info += "\n<i>✨ Сегодня задание уже отмечено как сделанное!</i>"
+    info = presenter.render_card(rem, user_now)
 
     await callback.message.edit_text(
         info,
@@ -222,8 +110,10 @@ async def callback_toggle_active(
 ):
     """Включение / пауза напоминания."""
     r_repo = reminder_repo or db.reminders
+    service = ReminderService(reminder_repo=r_repo)
+
     rem_id = int(callback.data.split(":")[1])
-    res = r_repo.toggle_active(rem_id, callback.from_user.id)
+    res = service.toggle_active(rem_id, callback.from_user.id)
     if res is None:
         await callback.answer("Ошибка: напоминание не найдено.")
         return
@@ -233,7 +123,7 @@ async def callback_toggle_active(
         else "⏸️ Напоминание приостановлено на паузу."
     )
     await callback.answer(msg)
-    rem = r_repo.get_reminder(rem_id)
+    rem = service.get_reminder(rem_id)
     await callback.message.edit_reply_markup(
         reply_markup=get_reminder_control_keyboard(rem)
     )
@@ -247,8 +137,10 @@ async def callback_delete_reminder(
 ):
     """Удаление напоминания."""
     r_repo = reminder_repo or db.reminders
+    service = ReminderService(reminder_repo=r_repo, user_repo=user_repo)
+
     rem_id = int(callback.data.split(":")[1])
-    r_repo.delete_reminder(rem_id, callback.from_user.id)
+    service.delete_reminder(rem_id, callback.from_user.id)
     await callback.answer("🗑️ Напоминание удалено!")
     text, kb = render_reminders_list(callback.from_user.id, r_repo, user_repo)
     await callback.message.edit_text(
@@ -264,27 +156,17 @@ async def callback_test_trigger(
 ):
     """Тестовая отправка напоминания прямо сейчас."""
     r_repo = reminder_repo or db.reminders
+    service = ReminderService(reminder_repo=r_repo)
+    presenter = ReminderPresenter()
+
     rem_id = int(callback.data.split(":")[1])
-    rem = r_repo.get_reminder(rem_id)
+    rem = service.get_reminder(rem_id)
     if not rem:
         await callback.answer("Напоминание не найдено.")
         return
 
     await callback.answer("Отправляю тестовое напоминание...")
-    if rem.get("interval_minutes", 60) == 0:
-        if rem["reminder_type"] == "recurring":
-            desc = f"В назначенные дни приходит 1 раз в {rem.get('start_time', 'указанное время')}."
-        else:
-            dt_str = rem.get("start_time", "")
-            if rem.get("start_datetime"):
-                try:
-                    dt = safe_fromisoformat(rem["start_datetime"])
-                    dt_str = dt.strftime("%d.%m.%Y в %H:%M")
-                except Exception:
-                    pass
-            desc = f"Одноразовое напоминание на {dt_str}."
-    else:
-        desc = f"Интервал повтора: каждые {format_interval(rem['interval_minutes'])}, пока не нажмёте галочку."
+    desc = presenter.render_test_desc(rem)
 
     await bot.send_message(
         chat_id=callback.from_user.id,
@@ -305,8 +187,9 @@ async def callback_done_test_button(
 ):
     """Обработка кнопки «✅ Сделано!» для тестового напоминания."""
     r_repo = reminder_repo or db.reminders
+    service = ReminderService(reminder_repo=r_repo)
     rem_id = int(callback.data.split(":")[1])
-    rem = r_repo.get_reminder(rem_id)
+    rem = service.get_reminder(rem_id)
 
     # Всплывающее модальное окно (alert)
     await callback.answer(
@@ -331,7 +214,6 @@ async def callback_done_test_button(
         logger.warning(f"Не удалось обновить сообщение с тестовым напоминанием: {e}")
 
 
-
 @router.callback_query(F.data.startswith("done:"))
 async def callback_done_button(
     callback: CallbackQuery,
@@ -341,9 +223,10 @@ async def callback_done_button(
     """Обработка нажатия на кнопку «✅ Сделано!»."""
     r_repo = reminder_repo or db.reminders
     u_repo = user_repo or db.users
+    service = ReminderService(reminder_repo=r_repo, user_repo=u_repo)
 
     rem_id = int(callback.data.split(":")[1])
-    rem = r_repo.get_reminder(rem_id)
+    rem = service.get_reminder(rem_id)
 
     if not rem:
         await callback.answer(
@@ -355,9 +238,9 @@ async def callback_done_button(
     today_str = user_now.strftime("%Y-%m-%d")
 
     await callback.answer("🎉 Ура, вы молодец!", show_alert=True)
+    completion_type = service.mark_done(rem, today_str)
 
-    if rem["reminder_type"] == "recurring":
-        r_repo.mark_completed_today(rem_id, today_str)
+    if completion_type == "today":
         congrats_text = (
             f"✅ <b>Ура, вы молодец! Задача выполнена!</b> 🎉\n\n"
             f"📌 «{html.escape(rem['text'])}»\n\n"
@@ -365,7 +248,6 @@ async def callback_done_button(
             f"Следующее напоминание придёт в следующий запланированный день ({format_days_list(rem['days_of_week'])})."
         )
     else:
-        r_repo.mark_completed_permanently(rem_id)
         congrats_text = (
             f"✅ <b>Ура, вы молодец! Задача выполнена!</b> 🎉\n\n"
             f"📌 «{html.escape(rem['text'])}»\n\n"

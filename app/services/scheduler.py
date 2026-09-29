@@ -5,7 +5,12 @@ from aiogram import Bot
 
 from app.config import CHECK_INTERVAL_SECONDS, logger
 from app.database import db
-from app.domain.interfaces import INotifier, IReminderRepository, IUserRepository
+from app.domain.interfaces import (
+    INotifier,
+    IReminderExecutionRepository,
+    IReminderRepository,
+    IUserRepository,
+)
 from app.services.evaluator import ReminderEvaluator
 from app.services.notifier import TelegramNotifier
 from app.services.time_utils import get_now_for_user
@@ -14,13 +19,13 @@ from app.services.time_utils import get_now_for_user
 class ReminderSchedulerService:
     """
     Оркестратор планировщика напоминаний.
-    Соблюдает SRP: отвечает только за координацию цикла проверки и доставки,
+    Соблюдает SRP и ISP: зависит только от IReminderExecutionRepository,
     делегируя оценку ReminderEvaluator, а отправку - INotifier.
     """
 
     def __init__(
         self,
-        reminder_repo: IReminderRepository,
+        reminder_repo: IReminderExecutionRepository,
         user_repo: IUserRepository,
         evaluator: ReminderEvaluator,
         notifier: INotifier,
