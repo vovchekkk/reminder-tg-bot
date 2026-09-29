@@ -43,6 +43,7 @@ async def process_timezone_button(callback: CallbackQuery, state: FSMContext):
 
     if val == "manual":
         await state.set_state(TimezoneSettingsFSM.waiting_for_manual_tz)
+        await state.update_data(tz_msg_id=callback.message.message_id)
         text = (
             "✏️ Введите ваш часовой пояс текстом:\n\n"
             "Примеры:\n"
@@ -83,6 +84,21 @@ async def process_manual_tz_input(message: Message, state: FSMContext):
         tz_obj = get_user_tz_obj(tz_text)
         now_test = datetime.now(tz_obj)
         db.set_user_timezone(message.from_user.id, tz_text)
+
+        data = await state.get_data()
+        prev_msg_id = data.get("tz_msg_id")
+        if prev_msg_id:
+            try:
+                await message.bot.delete_message(
+                    chat_id=message.chat.id, message_id=prev_msg_id
+                )
+            except Exception:
+                pass
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
         await state.clear()
 
         await message.answer(

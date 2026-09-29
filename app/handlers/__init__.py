@@ -7,16 +7,18 @@ from app.handlers.wizard import router as wizard_router
 
 
 def setup_handlers(dp: Dispatcher):
-    """Подключает все роутеры к диспетчеру в правильном порядке приоритета."""
-    root_router = Router(name="root")
+    """Подключает роутеры к диспетчеру в строгом порядке приоритета."""
+    # 1. Пошаговый конструктор напоминаний
+    dp.include_router(wizard_router)
+    # 2. Настройки часового пояса
+    dp.include_router(timezone_router)
+    # 3. Список и управление напоминаниями
+    dp.include_router(reminders_router)
+    # 4. Общие команды (/start, /help, /menu)
+    dp.include_router(common_router)
 
-    # Специфичные обработчики мастера и функций
-    root_router.include_router(wizard_router)
-    root_router.include_router(timezone_router)
-    root_router.include_router(reminders_router)
-    root_router.include_router(common_router)
+    # 5. Роутер перехвата устаревших кнопок от предыдущих версий (СТРОГО ПОСЛЕДНИЙ)
+    fallback_router = Router(name="fallback")
+    fallback_router.callback_query.register(fallback_expired_callback)
+    dp.include_router(fallback_router)
 
-    # В самом конце регистрируем fallback для устаревших кнопок после деплоя
-    root_router.callback_query.register(fallback_expired_callback)
-
-    dp.include_router(root_router)

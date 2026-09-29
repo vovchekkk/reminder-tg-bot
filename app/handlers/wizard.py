@@ -46,16 +46,17 @@ async def start_wizard(event: Message | CallbackQuery, state: FSMContext):
     cancel_kb = get_wizard_cancel_keyboard()
 
     if isinstance(event, CallbackQuery):
-        await event.message.answer(
+        msg = await event.message.edit_text(
             prompt_text, reply_markup=cancel_kb, parse_mode=ParseMode.HTML
         )
         await event.answer()
     else:
-        await event.answer(
+        msg = await event.answer(
             prompt_text, reply_markup=cancel_kb, parse_mode=ParseMode.HTML
         )
 
     await state.set_state(CreateReminderFSM.waiting_for_text)
+    await state.update_data(wizard_msg_id=msg.message_id)
 
 
 @router.callback_query(F.data == "cancel_wizard")
@@ -63,7 +64,28 @@ async def cancel_wizard(callback: CallbackQuery, state: FSMContext):
     """Отмена мастера создания."""
     await state.clear()
     await callback.answer("Создание отменено.")
-    await callback.message.edit_text("❌ Создание напоминания отменено.")
+    await callback.message.edit_text(
+        "❌ <b>Создание напоминания отменено.</b>",
+        reply_markup=None,
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cleanup_previous_wizard_message(message: Message, state: FSMContext):
+    """Удаляет предыдущее сообщение мастера и сообщение пользователя для чистоты чата."""
+    data = await state.get_data()
+    prev_msg_id = data.get("wizard_msg_id")
+    if prev_msg_id:
+        try:
+            await message.bot.delete_message(
+                chat_id=message.chat.id, message_id=prev_msg_id
+            )
+        except Exception:
+            pass
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 @router.message(CreateReminderFSM.waiting_for_text)
@@ -74,10 +96,9 @@ async def process_reminder_text(message: Message, state: FSMContext):
         await message.answer("Пожалуйста, введите непустой текст напоминания:")
         return
 
-    await state.update_data(text=text)
-    await state.set_state(CreateReminderFSM.choosing_type)
+    await cleanup_previous_wizard_message(message, state)
 
-    await message.answer(
+    sent = await message.answer(
         f"📌 Текст: <b>{html.escape(text)}</b>\n\n"
         f"<b>Шаг 2: Выберите тип напоминания:</b>\n"
         f"• <b>🔁 По дням недели</b> — повторяется в выбранные дни (например, каждый Пн и Пт)\n"
@@ -85,6 +106,8 @@ async def process_reminder_text(message: Message, state: FSMContext):
         reply_markup=get_type_keyboard(),
         parse_mode=ParseMode.HTML,
     )
+    await state.update_data(text=text, wizard_msg_id=sent.message_id)
+    await state.set_state(CreateReminderFSM.choosing_type)
 
 
 # --- ПОВТОРЯЮЩИЕСЯ НАПОМИНАНИЯ (ПО ДНЯМ НЕДЕЛИ) ---
@@ -230,15 +253,17 @@ async def process_custom_start_time_text(message: Message, state: FSMContext):
         return
 
     start_time_str = f"{h:02d}:{m_val:02d}"
-    await state.update_data(start_time=start_time_str)
-    await state.set_state(CreateReminderFSM.waiting_for_end_time)
-    await message.answer(
+    await cleanup_previous_wizard_message(message, state)
+
+    sent = await message.answer(
         f"🕐 Начало: <b>с {start_time_str}</b>\n\n"
         f"🛑 <b>До скольки напоминать в эти дни?</b>\n"
         f"<i>(После этого времени бот перестанет присылать повторы до следующего назначенного дня, чтобы не беспокоить ночью)</i>",
         reply_markup=get_end_time_keyboard(),
         parse_mode=ParseMode.HTML,
     )
+    await state.update_data(start_time=start_time_str, wizard_msg_id=sent.message_id)
+    await state.set_state(CreateReminderFSM.waiting_for_end_time)
 
 
 @router.callback_query(
@@ -282,7 +307,10 @@ async def process_custom_end_time_text(message: Message, state: FSMContext):
 
     end_time_str = f"{h:02d}:{m_val:02d}"
     await state.update_data(end_time=end_time_str)
-    await prompt_interval_selection(message, state, is_edit=False)
+    await cleanup_previous_wizard_message(message, state)
+    sent = await prompt_interval_selection(message, state, is_edit=False)
+    if sent:
+        await state.update_data(wizard_msg_id=sent.message_id)
 
 
 # --- ОДНОРАЗОВЫЕ НАПОМИНАНИЯ ---
@@ -372,15 +400,19 @@ async def process_manual_onetime_dt(message: Message, state: FSMContext):
         )
         return
 
-    await state.update_data(start_datetime=parsed_dt.isoformat())
-    await state.set_state(CreateReminderFSM.waiting_for_onetime_end_time)
-    await message.answer(
+    await cleanup_previous_wizard_message(message, state)
+
+    sent = await message.answer(
         f"🕐 Первое напоминание: <b>{parsed_dt.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
         f"🛑 <b>До скольки напоминать (если вы не нажмёте ✅)?</b>\n"
         f"<i>(После этого времени бот перестанет присылать повторные сообщения)</i>",
         reply_markup=get_onetime_end_time_keyboard(),
         parse_mode=ParseMode.HTML,
     )
+    await state.update_data(
+        start_datetime=parsed_dt.isoformat(), wizard_msg_id=sent.message_id
+    )
+    await state.set_state(CreateReminderFSM.waiting_for_onetime_end_time)
 
 
 @router.callback_query(
@@ -430,7 +462,10 @@ async def process_custom_onetime_end_text(message: Message, state: FSMContext):
 
     end_time_str = f"{h:02d}:{m_val:02d}"
     await state.update_data(end_time=end_time_str)
-    await prompt_interval_selection(message, state, is_edit=False)
+    await cleanup_previous_wizard_message(message, state)
+    sent = await prompt_interval_selection(message, state, is_edit=False)
+    if sent:
+        await state.update_data(wizard_msg_id=sent.message_id)
 
 
 # --- ВЫБОР ИНТЕРВАЛА И ЗАВЕРШЕНИЕ ---
@@ -447,13 +482,13 @@ async def prompt_interval_selection(
         "пока вы не нажмёте кнопку «✅ Сделано!»:"
     )
     if is_edit:
-        await message.edit_text(
+        return await message.edit_text(
             prompt,
             reply_markup=get_interval_keyboard(),
             parse_mode=ParseMode.HTML,
         )
     else:
-        await message.answer(
+        return await message.answer(
             prompt,
             reply_markup=get_interval_keyboard(),
             parse_mode=ParseMode.HTML,
@@ -501,6 +536,7 @@ async def process_custom_interval_text(message: Message, state: FSMContext):
         )
         return
 
+    await cleanup_previous_wizard_message(message, state)
     await finalize_reminder_creation(
         message, state, minutes, is_callback=False
     )

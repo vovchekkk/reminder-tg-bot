@@ -79,6 +79,10 @@ async def fallback_expired_callback(callback: CallbackQuery, state: FSMContext):
     """Показывает предупреждение, если нажата старая кнопка с потерянным FSM состоянием."""
     await state.clear()
     await callback.answer(
-        "⏳ Это меню устарело после обновления бота.\nНажмите /start для открытия актуального меню.",
+        "⏳ Эта версия бота устарела.\nНажмите /start для обновления.",
         show_alert=True,
     )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
