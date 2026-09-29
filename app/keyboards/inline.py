@@ -1,0 +1,345 @@
+from typing import Set
+
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+from app.config import DAYS_NAMES, POPULAR_TIMEZONES
+
+
+def get_timezone_inline_keyboard() -> InlineKeyboardMarkup:
+    """Инлайн-кнопки с популярными часовыми поясами."""
+    buttons = []
+    row = []
+    for label, tz_name in POPULAR_TIMEZONES:
+        row.append(
+            InlineKeyboardButton(text=label, callback_data=f"settz:{tz_name}")
+        )
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="✏️ Ввести свой пояс или UTC вручную",
+                callback_data="settz:manual",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_done_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
+    """Кнопка подтверждения выполнения напоминания."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Сделано!",
+                    callback_data=f"done:{reminder_id}",
+                )
+            ]
+        ]
+    )
+
+
+def get_type_keyboard() -> InlineKeyboardMarkup:
+    """Выбор типа напоминания (по дням или одноразовое)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔁 По дням недели", callback_data="type:recurring"
+                ),
+                InlineKeyboardButton(
+                    text="⏱️ Одноразовое", callback_data="type:one_time"
+                ),
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
+def get_days_keyboard(selected_days: Set[int]) -> InlineKeyboardMarkup:
+    """Сетка кнопок выбора дней недели с пресетами."""
+    row1 = []
+    for day_idx in range(4):
+        mark = "✅ " if day_idx in selected_days else "⬜ "
+        name = DAYS_NAMES[day_idx][0]
+        row1.append(
+            InlineKeyboardButton(
+                text=f"{mark}{name}", callback_data=f"toggle_day:{day_idx}"
+            )
+        )
+
+    row2 = []
+    for day_idx in range(4, 7):
+        mark = "✅ " if day_idx in selected_days else "⬜ "
+        name = DAYS_NAMES[day_idx][0]
+        row2.append(
+            InlineKeyboardButton(
+                text=f"{mark}{name}", callback_data=f"toggle_day:{day_idx}"
+            )
+        )
+
+    sel_text = (
+        ", ".join(DAYS_NAMES[d][0] for d in sorted(selected_days))
+        if selected_days
+        else "не выбрано"
+    )
+
+    action_row1 = [
+        InlineKeyboardButton(
+            text="Выбрать все", callback_data="preset_days:all"
+        ),
+        InlineKeyboardButton(
+            text="Выбрать будни", callback_data="preset_days:weekdays"
+        ),
+    ]
+
+    action_row2 = [
+        InlineKeyboardButton(
+            text="Выбрать выходные", callback_data="preset_days:weekends"
+        ),
+        InlineKeyboardButton(
+            text="Сброс", callback_data="preset_days:clear"
+        ),
+    ]
+
+    confirm_row = [
+        InlineKeyboardButton(
+            text=f"➡️ Далее ({sel_text})", callback_data="days_confirmed"
+        )
+    ]
+
+    cancel_row = [
+        InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")
+    ]
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[row1, row2, action_row1, action_row2, confirm_row, cancel_row]
+    )
+
+
+def get_interval_keyboard() -> InlineKeyboardMarkup:
+    """Выбор частоты повтора напоминания."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="15 минут", callback_data="interval:15"
+                ),
+                InlineKeyboardButton(
+                    text="30 минут", callback_data="interval:30"
+                ),
+            ],
+            [
+                InlineKeyboardButton(text="1 час", callback_data="interval:60"),
+                InlineKeyboardButton(
+                    text="2 часа", callback_data="interval:120"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="3 часа", callback_data="interval:180"
+                ),
+                InlineKeyboardButton(
+                    text="✏️ Свой интервал", callback_data="interval:custom"
+                ),
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
+def get_start_time_keyboard() -> InlineKeyboardMarkup:
+    """Выбор времени начала показа напоминания."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="С начала дня", callback_data="starttime:00:00"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="С 08:00", callback_data="starttime:08:00"
+                ),
+                InlineKeyboardButton(
+                    text="С 09:00", callback_data="starttime:09:00"
+                ),
+                InlineKeyboardButton(
+                    text="С 10:00", callback_data="starttime:10:00"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="С 12:00", callback_data="starttime:12:00"
+                ),
+                InlineKeyboardButton(
+                    text="Прямо сейчас", callback_data="starttime:now"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Ввести другое время",
+                    callback_data="starttime:custom",
+                )
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
+def get_end_time_keyboard() -> InlineKeyboardMarkup:
+    """Выбор времени окончания показа напоминания."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="До 18:00", callback_data="endtime:18:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 20:00", callback_data="endtime:20:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 21:00", callback_data="endtime:21:00"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="До 22:00", callback_data="endtime:22:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 23:00", callback_data="endtime:23:00"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="До конца дня", callback_data="endtime:23:59"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Ввести другое время",
+                    callback_data="endtime:custom",
+                )
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
+def get_onetime_end_time_keyboard() -> InlineKeyboardMarkup:
+    """Выбор времени окончания для одноразового напоминания."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="До 20:00", callback_data="onetime_end:20:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 21:00", callback_data="onetime_end:21:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 22:00", callback_data="onetime_end:22:00"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="До 23:00", callback_data="onetime_end:23:00"
+                ),
+                InlineKeyboardButton(
+                    text="До конца дня", callback_data="onetime_end:23:59"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Без ограничений", callback_data="onetime_end:none"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Ввести другое время",
+                    callback_data="onetime_end:custom",
+                )
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
+def get_onetime_quick_keyboard() -> InlineKeyboardMarkup:
+    """Быстрый выбор времени старта для одноразового напоминания."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Через 10 мин", callback_data="quicktime:+10m"
+                ),
+                InlineKeyboardButton(
+                    text="Через 30 мин", callback_data="quicktime:+30m"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Через 1 час", callback_data="quicktime:+1h"
+                ),
+                InlineKeyboardButton(
+                    text="Через 2 часа", callback_data="quicktime:+2h"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Сегодня в 18:00", callback_data="quicktime:18:00"
+                ),
+                InlineKeyboardButton(
+                    text="Завтра в 09:00", callback_data="quicktime:tomorrow_09"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Ввести время текстом", callback_data="quicktime:manual"
+                )
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
+def get_reminder_control_keyboard(reminder: dict) -> InlineKeyboardMarkup:
+    """Кнопки управления карточкой напоминания."""
+    rem_id = reminder["id"]
+    is_active = reminder["is_active"]
+    toggle_text = "⏸️ Приостановить" if is_active else "▶️ Включить"
+
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=toggle_text, callback_data=f"toggle_active:{rem_id}"
+            ),
+            InlineKeyboardButton(
+                text="🔔 Проверить сейчас",
+                callback_data=f"test_trigger:{rem_id}",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="❌ Удалить", callback_data=f"delete_rem:{rem_id}"
+            ),
+            InlineKeyboardButton(
+                text="🔙 К списку", callback_data="refresh_list"
+            ),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_wizard_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Кнопка отмены мастера создания."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")]
+        ]
+    )
