@@ -657,6 +657,11 @@ def get_start_time_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text="С начала дня", callback_data="starttime:00:00"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="С 08:00", callback_data="starttime:08:00"
                 ),
                 InlineKeyboardButton(
@@ -706,8 +711,10 @@ def get_end_time_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="До 23:00", callback_data="endtime:23:00"
                 ),
+            ],
+            [
                 InlineKeyboardButton(
-                    text="До 23:59", callback_data="endtime:23:59"
+                    text="До конца дня", callback_data="endtime:23:59"
                 ),
             ],
             [
@@ -740,8 +747,10 @@ def get_onetime_end_time_keyboard() -> InlineKeyboardMarkup:
                     text="До 23:00", callback_data="onetime_end:23:00"
                 ),
                 InlineKeyboardButton(
-                    text="До 23:59", callback_data="onetime_end:23:59"
+                    text="До конца дня", callback_data="onetime_end:23:59"
                 ),
+            ],
+            [
                 InlineKeyboardButton(
                     text="Без ограничений", callback_data="onetime_end:none"
                 ),
