@@ -1,124 +1,93 @@
 import asyncio
-import html
+from typing import Optional
 
 from aiogram import Bot
-from aiogram.enums import ParseMode
 
 from app.config import CHECK_INTERVAL_SECONDS, logger
 from app.database import db
-from app.keyboards import get_done_keyboard
-from app.services.time_utils import (
-    format_interval,
-    get_now_for_user,
-    is_time_in_range,
-    safe_fromisoformat,
-)
+from app.domain.interfaces import INotifier, IReminderRepository, IUserRepository
+from app.services.evaluator import ReminderEvaluator
+from app.services.notifier import TelegramNotifier
+from app.services.time_utils import get_now_for_user
 
 
-async def reminder_worker(bot: Bot):
-    """Фоновый планировщик, проверяющий базу и рассылающий напоминания."""
-    logger.info("Фоновый воркер напоминаний запущен.")
-    while True:
+class ReminderSchedulerService:
+    """
+    Оркестратор планировщика напоминаний.
+    Соблюдает SRP: отвечает только за координацию цикла проверки и доставки,
+    делегируя оценку ReminderEvaluator, а отправку - INotifier.
+    """
+
+    def __init__(
+        self,
+        reminder_repo: IReminderRepository,
+        user_repo: IUserRepository,
+        evaluator: ReminderEvaluator,
+        notifier: INotifier,
+        check_interval_seconds: int = CHECK_INTERVAL_SECONDS,
+    ):
+        self._reminder_repo = reminder_repo
+        self._user_repo = user_repo
+        self._evaluator = evaluator
+        self._notifier = notifier
+        self._check_interval = check_interval_seconds
+
+    async def check_and_deliver(self) -> int:
+        """Разовый проход: проверяет базу и отправляет наступившие напоминания. Возвращает число отправленных."""
+        delivered_count = 0
         try:
-            active_reminders = db.get_active_reminders()
+            active_reminders = self._reminder_repo.get_active_reminders()
 
             for rem in active_reminders:
                 try:
                     user_id = rem["user_id"]
-                    # Текущее время пользователя с учетом его личного часового пояса
-                    now = get_now_for_user(user_id, db)
-                    today_str = now.strftime("%Y-%m-%d")
-                    should_remind = False
+                    user_now = get_now_for_user(user_id, self._user_repo)
 
-                    if rem["reminder_type"] == "recurring":
-                        if rem.get("days_of_week"):
-                            days = [
-                                int(d)
-                                for d in rem["days_of_week"].split(",")
-                                if d.strip().isdigit()
-                            ]
-                            if now.weekday() not in days:
-                                continue
-
-                        if rem["last_completed_date"] == today_str:
-                            continue
-
-                        # Проверяем диапазон времени со start_time до end_time
-                        if not is_time_in_range(
-                            rem.get("start_time"), rem.get("end_time"), now.time()
-                        ):
-                            continue
-
-                        if not rem["last_reminded_at"]:
-                            should_remind = True
-                        else:
-                            last_reminded_dt = safe_fromisoformat(
-                                rem["last_reminded_at"], tz_obj=now.tzinfo
-                            )
-                            if last_reminded_dt.date() < now.date():
-                                should_remind = True
-                            else:
-                                elapsed_minutes = (
-                                    now - last_reminded_dt
-                                ).total_seconds() / 60
-                                if elapsed_minutes >= rem["interval_minutes"]:
-                                    should_remind = True
-
-                    elif rem["reminder_type"] == "one_time":
-                        if rem["is_completed"]:
-                            continue
-
-                        start_dt = safe_fromisoformat(
-                            rem["start_datetime"], tz_obj=now.tzinfo
-                        )
-                        if now < start_dt:
-                            continue
-
-                        # Проверяем ограничение end_time (если задано)
-                        if rem.get("end_time"):
-                            if not is_time_in_range(
-                                None, rem.get("end_time"), now.time()
-                            ):
-                                continue
-
-                        if not rem["last_reminded_at"]:
-                            should_remind = True
-                        else:
-                            last_reminded_dt = safe_fromisoformat(
-                                rem["last_reminded_at"], tz_obj=now.tzinfo
-                            )
-                            elapsed_minutes = (
-                                now - last_reminded_dt
-                            ).total_seconds() / 60
-                            if elapsed_minutes >= rem["interval_minutes"]:
-                                should_remind = True
-
-                    if should_remind:
+                    if self._evaluator.is_due(rem, user_now):
                         logger.info(
-                            f"Отправка напоминания #{rem['id']} пользователю {rem['user_id']}: {rem['text']}"
+                            f"Отправка напоминания #{rem['id']} пользователю {user_id}: {rem['text']}"
                         )
-                        message_text = (
-                            f"🔔 <b>НАПОМИНАНИЕ!</b>\n\n"
-                            f"📌 <b>{html.escape(rem['text'])}</b>\n\n"
-                            f"<i>Повторяю каждые {format_interval(rem['interval_minutes'])}, "
-                            f"пока не подтвердите выполнение кнопкой ниже:</i>"
-                        )
-
-                        await bot.send_message(
-                            chat_id=rem["user_id"],
-                            text=message_text,
-                            reply_markup=get_done_keyboard(rem["id"]),
-                            parse_mode=ParseMode.HTML,
-                        )
-
-                        db.update_last_reminded(rem["id"], now.isoformat())
-
+                        sent = await self._notifier.send_reminder(rem)
+                        if sent:
+                            self._reminder_repo.update_last_reminded(
+                                rem["id"], user_now.isoformat()
+                            )
+                            delivered_count += 1
                 except Exception as rem_err:
                     logger.error(
                         f"Ошибка обработки напоминания #{rem.get('id')}: {rem_err}"
                     )
-
         except Exception as loop_err:
-            logger.error(f"Ошибка в фоновом цикле воркера: {loop_err}")
+            logger.error(f"Ошибка проверки списка активных напоминаний: {loop_err}")
 
-        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+        return delivered_count
+
+    async def run_forever(self) -> None:
+        """Бесконечный фоновый цикл проверки напоминаний."""
+        logger.info("Фоновый воркер напоминаний запущен.")
+        while True:
+            await self.check_and_deliver()
+            await asyncio.sleep(self._check_interval)
+
+
+async def reminder_worker(
+    bot: Bot,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+    evaluator: Optional[ReminderEvaluator] = None,
+    notifier: Optional[INotifier] = None,
+):
+    """Точка входа для запуска воркера с поддержкой внедрения зависимостей (DIP)."""
+    r_repo = reminder_repo or db.reminders
+    u_repo = user_repo or db.users
+    ev = evaluator or ReminderEvaluator()
+    notif = notifier or TelegramNotifier(bot)
+
+    service = ReminderSchedulerService(
+        reminder_repo=r_repo,
+        user_repo=u_repo,
+        evaluator=ev,
+        notifier=notif,
+        check_interval_seconds=CHECK_INTERVAL_SECONDS,
+    )
+    await service.run_forever()

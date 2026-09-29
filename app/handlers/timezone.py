@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
@@ -7,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.database import db
+from app.domain.interfaces import IUserRepository
 from app.keyboards import get_main_keyboard, get_timezone_inline_keyboard
 from app.services.time_utils import get_now_for_user, get_user_tz_obj
 from app.states import TimezoneSettingsFSM
@@ -16,11 +18,16 @@ router = Router(name="timezone")
 
 @router.message(Command("timezone"))
 @router.message(F.text == "⚙️ Часовой пояс")
-async def show_timezone_settings(message: Message, state: FSMContext):
+async def show_timezone_settings(
+    message: Message,
+    state: FSMContext,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Показывает меню выбора часового пояса."""
     await state.clear()
-    user_now = get_now_for_user(message.from_user.id, db)
-    user_tz = db.get_user_timezone(message.from_user.id)
+    u_repo = user_repo or db.users
+    user_now = get_now_for_user(message.from_user.id, u_repo)
+    user_tz = u_repo.get_user_timezone(message.from_user.id)
     now_str = user_now.strftime("%d.%m.%Y %H:%M")
 
     prompt = (
@@ -37,9 +44,14 @@ async def show_timezone_settings(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("settz:"))
-async def process_timezone_button(callback: CallbackQuery, state: FSMContext):
+async def process_timezone_button(
+    callback: CallbackQuery,
+    state: FSMContext,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Обрабатывает выбор города или запрос на ручной ввод пояса."""
     val = callback.data.split(":")[1]
+    u_repo = user_repo or db.users
 
     if val == "manual":
         await state.set_state(TimezoneSettingsFSM.waiting_for_manual_tz)
@@ -56,8 +68,8 @@ async def process_timezone_button(callback: CallbackQuery, state: FSMContext):
         return
 
     # Сохраняем выбранный из списка часовой пояс
-    db.set_user_timezone(callback.from_user.id, val)
-    user_now = get_now_for_user(callback.from_user.id, db)
+    u_repo.set_user_timezone(callback.from_user.id, val)
+    user_now = get_now_for_user(callback.from_user.id, u_repo)
     now_str = user_now.strftime("%d.%m.%Y %H:%M")
 
     await callback.answer("✅ Часовой пояс сохранён!", show_alert=True)
@@ -77,13 +89,18 @@ async def process_timezone_button(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(TimezoneSettingsFSM.waiting_for_manual_tz)
-async def process_manual_tz_input(message: Message, state: FSMContext):
+async def process_manual_tz_input(
+    message: Message,
+    state: FSMContext,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Обрабатывает введённый вручную часовой пояс."""
     tz_text = message.text.strip()
+    u_repo = user_repo or db.users
     try:
         tz_obj = get_user_tz_obj(tz_text)
         now_test = datetime.now(tz_obj)
-        db.set_user_timezone(message.from_user.id, tz_text)
+        u_repo.set_user_timezone(message.from_user.id, tz_text)
 
         data = await state.get_data()
         prev_msg_id = data.get("tz_msg_id")

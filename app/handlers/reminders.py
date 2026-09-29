@@ -1,4 +1,5 @@
 import html
+from typing import Optional
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ParseMode
@@ -8,6 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app.config import logger
 from app.database import db
+from app.domain.interfaces import IReminderRepository, IUserRepository
 from app.keyboards import get_done_keyboard, get_reminder_control_keyboard
 from app.services.time_utils import (
     format_days_list,
@@ -19,10 +21,17 @@ from app.services.time_utils import (
 router = Router(name="reminders")
 
 
-def render_reminders_list(user_id: int):
+def render_reminders_list(
+    user_id: int,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Формирует текст и инлайн-клавиатуру со списком напоминаний пользователя."""
-    reminders = db.get_user_reminders(user_id)
-    user_now = get_now_for_user(user_id, db)
+    r_repo = reminder_repo or db.reminders
+    u_repo = user_repo or db.users
+
+    reminders = r_repo.get_user_reminders(user_id)
+    user_now = get_now_for_user(user_id, u_repo)
     user_today_str = user_now.strftime("%Y-%m-%d")
 
     if not reminders:
@@ -93,18 +102,28 @@ def render_reminders_list(user_id: int):
 
 @router.message(Command("list"))
 @router.message(F.text == "📋 Мои напоминания")
-async def show_reminders_list(message: Message, state: FSMContext):
+async def show_reminders_list(
+    message: Message,
+    state: FSMContext,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Показывает список напоминаний по команде или кнопке."""
     await state.clear()
-    text, kb = render_reminders_list(message.from_user.id)
+    text, kb = render_reminders_list(message.from_user.id, reminder_repo, user_repo)
     await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 @router.callback_query(F.data == "refresh_list")
-async def callback_refresh_list(callback: CallbackQuery, state: FSMContext):
+async def callback_refresh_list(
+    callback: CallbackQuery,
+    state: FSMContext,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Обновляет сообщение со списком напоминаний."""
     await state.clear()
-    text, kb = render_reminders_list(callback.from_user.id)
+    text, kb = render_reminders_list(callback.from_user.id, reminder_repo, user_repo)
     try:
         await callback.message.edit_text(
             text, reply_markup=kb, parse_mode=ParseMode.HTML
@@ -117,15 +136,22 @@ async def callback_refresh_list(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("manage_rem:"))
-async def callback_manage_reminder(callback: CallbackQuery):
+async def callback_manage_reminder(
+    callback: CallbackQuery,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Карточка управления конкретным напоминанием."""
+    r_repo = reminder_repo or db.reminders
+    u_repo = user_repo or db.users
+
     rem_id = int(callback.data.split(":")[1])
-    rem = db.get_reminder(rem_id)
+    rem = r_repo.get_reminder(rem_id)
     if not rem or rem["user_id"] != callback.from_user.id:
         await callback.answer("Напоминание не найдено.", show_alert=True)
         return
 
-    user_now = get_now_for_user(callback.from_user.id, db)
+    user_now = get_now_for_user(callback.from_user.id, u_repo)
     status = (
         "🟢 Активно"
         if rem["is_active"]
@@ -170,10 +196,14 @@ async def callback_manage_reminder(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("toggle_active:"))
-async def callback_toggle_active(callback: CallbackQuery):
+async def callback_toggle_active(
+    callback: CallbackQuery,
+    reminder_repo: Optional[IReminderRepository] = None,
+):
     """Включение / пауза напоминания."""
+    r_repo = reminder_repo or db.reminders
     rem_id = int(callback.data.split(":")[1])
-    res = db.toggle_active(rem_id, callback.from_user.id)
+    res = r_repo.toggle_active(rem_id, callback.from_user.id)
     if res is None:
         await callback.answer("Ошибка: напоминание не найдено.")
         return
@@ -183,29 +213,39 @@ async def callback_toggle_active(callback: CallbackQuery):
         else "⏸️ Напоминание приостановлено на паузу."
     )
     await callback.answer(msg)
-    rem = db.get_reminder(rem_id)
+    rem = r_repo.get_reminder(rem_id)
     await callback.message.edit_reply_markup(
         reply_markup=get_reminder_control_keyboard(rem)
     )
 
 
 @router.callback_query(F.data.startswith("delete_rem:"))
-async def callback_delete_reminder(callback: CallbackQuery):
+async def callback_delete_reminder(
+    callback: CallbackQuery,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Удаление напоминания."""
+    r_repo = reminder_repo or db.reminders
     rem_id = int(callback.data.split(":")[1])
-    db.delete_reminder(rem_id, callback.from_user.id)
+    r_repo.delete_reminder(rem_id, callback.from_user.id)
     await callback.answer("🗑️ Напоминание удалено!")
-    text, kb = render_reminders_list(callback.from_user.id)
+    text, kb = render_reminders_list(callback.from_user.id, r_repo, user_repo)
     await callback.message.edit_text(
         text, reply_markup=kb, parse_mode=ParseMode.HTML
     )
 
 
 @router.callback_query(F.data.startswith("test_trigger:"))
-async def callback_test_trigger(callback: CallbackQuery, bot: Bot):
+async def callback_test_trigger(
+    callback: CallbackQuery,
+    bot: Bot,
+    reminder_repo: Optional[IReminderRepository] = None,
+):
     """Тестовая отправка напоминания прямо сейчас."""
+    r_repo = reminder_repo or db.reminders
     rem_id = int(callback.data.split(":")[1])
-    rem = db.get_reminder(rem_id)
+    rem = r_repo.get_reminder(rem_id)
     if not rem:
         await callback.answer("Напоминание не найдено.")
         return
@@ -224,10 +264,17 @@ async def callback_test_trigger(callback: CallbackQuery, bot: Bot):
 
 
 @router.callback_query(F.data.startswith("done:"))
-async def callback_done_button(callback: CallbackQuery):
+async def callback_done_button(
+    callback: CallbackQuery,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Обработка нажатия на кнопку «✅ Сделано!»."""
+    r_repo = reminder_repo or db.reminders
+    u_repo = user_repo or db.users
+
     rem_id = int(callback.data.split(":")[1])
-    rem = db.get_reminder(rem_id)
+    rem = r_repo.get_reminder(rem_id)
 
     if not rem:
         await callback.answer(
@@ -235,13 +282,13 @@ async def callback_done_button(callback: CallbackQuery):
         )
         return
 
-    user_now = get_now_for_user(callback.from_user.id, db)
+    user_now = get_now_for_user(callback.from_user.id, u_repo)
     today_str = user_now.strftime("%Y-%m-%d")
 
     await callback.answer("🎉 Ура, вы молодец!", show_alert=True)
 
     if rem["reminder_type"] == "recurring":
-        db.mark_completed_today(rem_id, today_str)
+        r_repo.mark_completed_today(rem_id, today_str)
         congrats_text = (
             f"✅ <b>Ура, вы молодец! Задача выполнена!</b> 🎉\n\n"
             f"📌 «{html.escape(rem['text'])}»\n\n"
@@ -249,7 +296,7 @@ async def callback_done_button(callback: CallbackQuery):
             f"Следующее напоминание придёт в следующий запланированный день ({format_days_list(rem['days_of_week'])})."
         )
     else:
-        db.mark_completed_permanently(rem_id)
+        r_repo.mark_completed_permanently(rem_id)
         congrats_text = (
             f"✅ <b>Ура, вы молодец! Задача выполнена!</b> 🎉\n\n"
             f"📌 «{html.escape(rem['text'])}»\n\n"

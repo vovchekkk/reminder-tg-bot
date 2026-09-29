@@ -3,7 +3,7 @@ import re
 from typing import Optional
 
 from app.config import DAYS_NAMES, DEFAULT_TIMEZONE, logger
-from app.database.database import Database
+from app.domain.interfaces import IUserRepository
 
 
 def get_user_tz_obj(tz_name: str) -> timezone:
@@ -33,9 +33,13 @@ def get_user_tz_obj(tz_name: str) -> timezone:
     return timezone.utc
 
 
-def get_now_for_user(user_id: int, db: Database) -> datetime:
+def get_now_for_user(
+    user_id: int, user_repo: Optional[IUserRepository] = None
+) -> datetime:
     """Возвращает текущую дату и время для конкретного пользователя с учетом его часового пояса."""
-    tz_str = db.get_user_timezone(user_id) if db else DEFAULT_TIMEZONE
+    tz_str = (
+        user_repo.get_user_timezone(user_id) if user_repo else DEFAULT_TIMEZONE
+    )
     tz_obj = get_user_tz_obj(tz_str)
     return datetime.now(tz_obj)
 

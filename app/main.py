@@ -2,6 +2,8 @@ import asyncio
 import os
 import sys
 
+from typing import Optional
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -10,6 +12,7 @@ from aiogram.types import BotCommand
 
 from app.config import BOT_TOKEN, PORT, logger
 from app.database import db
+from app.domain.interfaces import ISystemSettingsRepository, IUserRepository
 from app.handlers import setup_handlers
 from app.keyboards import get_main_keyboard
 from app.services import reminder_worker
@@ -33,15 +36,22 @@ async def setup_bot_commands(bot: Bot):
         logger.warning(f"Не удалось установить команды бота: {cmd_err}")
 
 
-async def notify_on_deploy(bot: Bot):
+async def notify_on_deploy(
+    bot: Bot,
+    system_repo: Optional[ISystemSettingsRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Уведомляет пользователей о деплое новой версии для обновления меню."""
+    sys_repo = system_repo or db.system
+    u_repo = user_repo or db.users
+
     current_build = os.getenv("RENDER_GIT_COMMIT") or str(int(os.path.getmtime(__file__)))
-    last_build = db.get_system_setting("last_deployed_build")
+    last_build = sys_repo.get_setting("last_deployed_build")
 
     if last_build != current_build:
-        db.set_system_setting("last_deployed_build", current_build)
+        sys_repo.set_setting("last_deployed_build", current_build)
         if last_build is not None:
-            user_ids = db.get_all_user_ids()
+            user_ids = u_repo.get_all_user_ids()
             for uid in user_ids:
                 try:
                     await bot.send_message(

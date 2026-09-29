@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.database import db
+from app.domain.interfaces import IReminderRepository, IUserRepository
 from app.keyboards import (
     get_days_keyboard,
     get_end_time_keyboard,
@@ -207,7 +208,7 @@ async def process_start_time_choice(
     callback: CallbackQuery, state: FSMContext
 ):
     """Обработка кнопки времени старта."""
-    val = callback.data.split(":")[1]
+    val = callback.data.split(":", 1)[1]
     if val == "custom":
         await callback.message.edit_text(
             "✏️ Напишите время начала в формате <b>ЧЧ:ММ</b> (например, <code>09:30</code> или <code>14:00</code>):",
@@ -271,7 +272,7 @@ async def process_custom_start_time_text(message: Message, state: FSMContext):
 )
 async def process_end_time_choice(callback: CallbackQuery, state: FSMContext):
     """Обработка кнопки времени окончания."""
-    val = callback.data.split(":")[1]
+    val = callback.data.split(":", 1)[1]
     if val == "custom":
         await callback.message.edit_text(
             "✏️ Напишите время окончания в формате <b>ЧЧ:ММ</b> (например, <code>22:00</code> или <code>23:30</code>):",
@@ -336,10 +337,15 @@ async def choose_onetime_type(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(
     CreateReminderFSM.waiting_for_onetime_dt, F.data.startswith("quicktime:")
 )
-async def process_quick_onetime(callback: CallbackQuery, state: FSMContext):
+async def process_quick_onetime(
+    callback: CallbackQuery,
+    state: FSMContext,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Быстрый выбор времени для одноразового напоминания."""
-    val = callback.data.split(":")[1]
-    now = get_now_for_user(callback.from_user.id, db)
+    val = callback.data.split(":", 1)[1]
+    u_repo = user_repo or db.users
+    now = get_now_for_user(callback.from_user.id, u_repo)
 
     if val == "manual":
         await callback.message.edit_text(
@@ -388,9 +394,14 @@ async def process_quick_onetime(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(CreateReminderFSM.waiting_for_onetime_dt)
-async def process_manual_onetime_dt(message: Message, state: FSMContext):
+async def process_manual_onetime_dt(
+    message: Message,
+    state: FSMContext,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Ручной ввод даты и времени для одноразового напоминания."""
-    now = get_now_for_user(message.from_user.id, db)
+    u_repo = user_repo or db.users
+    now = get_now_for_user(message.from_user.id, u_repo)
     parsed_dt = parse_time_or_delay(message.text, now)
     if not parsed_dt:
         await message.answer(
@@ -420,7 +431,7 @@ async def process_manual_onetime_dt(message: Message, state: FSMContext):
 )
 async def process_onetime_end_choice(callback: CallbackQuery, state: FSMContext):
     """Выбор ограничения времени для одноразового напоминания."""
-    val = callback.data.split(":")[1]
+    val = callback.data.split(":", 1)[1]
     if val == "custom":
         await callback.message.edit_text(
             "✏️ Напишите время окончания в формате <b>ЧЧ:ММ</b> (например, <code>22:00</code> или <code>23:30</code>):",
@@ -498,9 +509,14 @@ async def prompt_interval_selection(
 @router.callback_query(
     CreateReminderFSM.choosing_interval, F.data.startswith("interval:")
 )
-async def process_interval_choice(callback: CallbackQuery, state: FSMContext):
+async def process_interval_choice(
+    callback: CallbackQuery,
+    state: FSMContext,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Выбор готового интервала."""
-    val = callback.data.split(":")[1]
+    val = callback.data.split(":", 1)[1]
     if val == "custom":
         await state.set_state(CreateReminderFSM.waiting_for_custom_interval)
         await callback.message.edit_text(
@@ -513,13 +529,23 @@ async def process_interval_choice(callback: CallbackQuery, state: FSMContext):
 
     interval_minutes = int(val)
     await finalize_reminder_creation(
-        callback.message, state, interval_minutes, is_callback=True
+        callback.message,
+        state,
+        interval_minutes,
+        is_callback=True,
+        reminder_repo=reminder_repo,
+        user_repo=user_repo,
     )
     await callback.answer()
 
 
 @router.message(CreateReminderFSM.waiting_for_custom_interval)
-async def process_custom_interval_text(message: Message, state: FSMContext):
+async def process_custom_interval_text(
+    message: Message,
+    state: FSMContext,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Ручной ввод интервала в минутах."""
     text = message.text.strip()
     if not text.isdigit():
@@ -538,14 +564,27 @@ async def process_custom_interval_text(message: Message, state: FSMContext):
 
     await cleanup_previous_wizard_message(message, state)
     await finalize_reminder_creation(
-        message, state, minutes, is_callback=False
+        message,
+        state,
+        minutes,
+        is_callback=False,
+        reminder_repo=reminder_repo,
+        user_repo=user_repo,
     )
 
 
 async def finalize_reminder_creation(
-    message: Message, state: FSMContext, interval_minutes: int, is_callback: bool
+    message: Message,
+    state: FSMContext,
+    interval_minutes: int,
+    is_callback: bool,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
 ):
     """Завершение создания напоминания и сохранение в базу."""
+    r_repo = reminder_repo or db.reminders
+    u_repo = user_repo or db.users
+
     data = await state.get_data()
     user_id = message.chat.id
     text = data["text"]
@@ -555,7 +594,7 @@ async def finalize_reminder_creation(
     end_time = data.get("end_time")
     start_datetime = data.get("start_datetime")
 
-    rem_id = db.add_reminder(
+    rem_id = r_repo.add_reminder(
         user_id=user_id,
         text=text,
         reminder_type=reminder_type,
@@ -567,7 +606,7 @@ async def finalize_reminder_creation(
     )
 
     await state.clear()
-    user_now = get_now_for_user(user_id, db)
+    user_now = get_now_for_user(user_id, u_repo)
 
     summary = (
         f"🎉 <b>Напоминание успешно создано!</b>\n\n"

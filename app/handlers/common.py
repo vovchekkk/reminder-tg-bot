@@ -1,3 +1,5 @@
+from typing import Optional
+
 from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
@@ -5,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.database import db
+from app.domain.interfaces import IUserRepository
 from app.keyboards import get_main_keyboard, get_timezone_inline_keyboard
 from app.services.time_utils import get_now_for_user
 
@@ -16,15 +19,20 @@ router = Router(name="common")
 @router.message(Command("refresh"))
 @router.message(Command("reset"))
 @router.message(F.text.lower().in_(["меню", "старт", "start", "обновить", "перезапуск"]))
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(
+    message: Message,
+    state: FSMContext,
+    user_repo: Optional[IUserRepository] = None,
+):
     """Стартовая команда или обновление главного меню."""
     await state.clear()
+    u_repo = user_repo or db.users
     user_id = message.from_user.id
-    user_now = get_now_for_user(user_id, db)
-    user_tz = db.get_user_timezone(user_id)
+    user_now = get_now_for_user(user_id, u_repo)
+    user_tz = u_repo.get_user_timezone(user_id)
     now_str = user_now.strftime("%d.%m.%Y %H:%M")
 
-    if not db.has_user_timezone(user_id):
+    if not u_repo.has_user_timezone(user_id):
         text = (
             f"👋 <b>Привет! Я бот-напоминалка с контролем выполнения!</b>\n\n"
             f"Чтобы напоминания приходили строго вовремя, пожалуйста, <b>выберите ваш часовой пояс</b> из списка ниже:\n\n"
