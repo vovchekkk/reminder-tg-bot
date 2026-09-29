@@ -25,13 +25,37 @@ class RecurringReminderStrategy(IReminderStrategy):
         if reminder.get("last_completed_date") == today_str:
             return False
 
-        # 3. Проверка диапазона времени [start_time, end_time]
+        interval = reminder.get("interval_minutes", 60)
+
+        # 3. Режим: 1 раз в день в точное время (interval_minutes == 0)
+        if interval == 0:
+            last_reminded = reminder.get("last_reminded_at")
+            if last_reminded:
+                last_reminded_dt = safe_fromisoformat(last_reminded, tz_obj=now.tzinfo)
+                if last_reminded_dt.date() == now.date():
+                    return False  # Сегодня уже было отправлено
+
+            # Проверяем, наступило ли запланированное время
+            start_time_str = reminder.get("start_time")
+            if start_time_str:
+                try:
+                    sh, sm = map(int, start_time_str.split(":"))
+                    from datetime import time
+
+                    if now.time() < time(sh, sm, 0):
+                        return False
+                except Exception:
+                    pass
+            return True
+
+        # 4. Режим: повторяющиеся напоминания в течение дня
+        # Проверка диапазона времени [start_time, end_time]
         if not is_time_in_range(
             reminder.get("start_time"), reminder.get("end_time"), now.time()
         ):
             return False
 
-        # 4. Проверка интервала с момента последнего напоминания
+        # Проверка интервала с момента последнего напоминания
         last_reminded = reminder.get("last_reminded_at")
         if not last_reminded:
             return True
@@ -41,7 +65,8 @@ class RecurringReminderStrategy(IReminderStrategy):
             return True
 
         elapsed_minutes = (now - last_reminded_dt).total_seconds() / 60
-        return elapsed_minutes >= reminder.get("interval_minutes", 60)
+        return elapsed_minutes >= interval
+
 
 
 class OneTimeReminderStrategy(IReminderStrategy):

@@ -55,11 +55,20 @@ class TestKeyboards:
         start_cbs = [b.callback_data for row in start_kb.inline_keyboard for b in row]
         assert "starttime:00:00" in start_cbs  # "С начала дня"
         assert "starttime:custom" in start_cbs
+        assert "starttime:now" not in start_cbs  # "Прямо сейчас" удалено!
 
         end_kb = get_end_time_keyboard()
         end_cbs = [b.callback_data for row in end_kb.inline_keyboard for b in row]
         assert "endtime:23:59" in end_cbs  # "До конца дня"
         assert "endtime:custom" in end_cbs
+
+    def test_done_keyboard_test_mode(self):
+        kb_normal = get_done_keyboard(42, is_test=False)
+        assert kb_normal.inline_keyboard[0][0].callback_data == "done:42"
+
+        kb_test = get_done_keyboard(42, is_test=True)
+        assert kb_test.inline_keyboard[0][0].callback_data == "done_test:42"
+
 
     def test_reminder_control_keyboard(self):
         rem_active = {"id": 42, "is_active": 1}

@@ -14,13 +14,16 @@ from app.domain.interfaces import IReminderRepository, IUserRepository
 from app.keyboards import (
     get_days_keyboard,
     get_end_time_keyboard,
+    get_exact_time_keyboard,
     get_interval_keyboard,
     get_onetime_end_time_keyboard,
     get_onetime_quick_keyboard,
+    get_recurring_mode_keyboard,
     get_start_time_keyboard,
     get_type_keyboard,
     get_wizard_cancel_keyboard,
 )
+
 from app.services.time_utils import (
     format_days_list,
     format_interval,
@@ -189,8 +192,42 @@ async def days_confirmed(callback: CallbackQuery, state: FSMContext):
 
     days_str = ",".join(map(str, sorted(selected_days)))
     await state.update_data(days_of_week=days_str)
-    await state.set_state(CreateReminderFSM.waiting_for_start_time)
+    await state.set_state(CreateReminderFSM.choosing_recurring_mode)
 
+    await callback.message.edit_text(
+        f"📅 Выбранные дни: <b>{format_days_list(days_str)}</b>\n\n"
+        f"⚙️ <b>Как напоминать в эти дни?</b>\n\n"
+        f"• 🔔 <b>1 раз в день в точное время</b> — пришлёт ровно одно напоминание в назначенный час.\n"
+        f"• 🔁 <b>Повторяющиеся напоминания</b> — будет напоминать каждые X минут в заданном диапазоне времени, пока вы не нажмёте «Сделано».",
+        reply_markup=get_recurring_mode_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+
+@router.callback_query(
+    CreateReminderFSM.choosing_recurring_mode, F.data == "recmode:once"
+)
+async def process_recmode_once(callback: CallbackQuery, state: FSMContext):
+    """Выбор режима: 1 раз в день в точное время."""
+    await state.set_state(CreateReminderFSM.waiting_for_exact_time)
+    await callback.message.edit_text(
+        "🕐 <b>Во сколько прислать напоминание в эти дни?</b>\n\n"
+        "Выберите время кнопкой или напишите своё в формате <b>ЧЧ:ММ</b> (например, <code>10:00</code> или <code>14:30</code>):",
+        reply_markup=get_exact_time_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+
+@router.callback_query(
+    CreateReminderFSM.choosing_recurring_mode, F.data == "recmode:repeating"
+)
+async def process_recmode_repeating(callback: CallbackQuery, state: FSMContext):
+    """Выбор режима: повторяющиеся напоминания в течение дня."""
+    data = await state.get_data()
+    days_str = data.get("days_of_week")
+    await state.set_state(CreateReminderFSM.waiting_for_start_time)
     await callback.message.edit_text(
         f"📅 Выбранные дни: <b>{format_days_list(days_str)}</b>\n\n"
         f"🕐 <b>С какого времени начинать напоминать в эти дни?</b>\n"
@@ -199,6 +236,74 @@ async def days_confirmed(callback: CallbackQuery, state: FSMContext):
         parse_mode=ParseMode.HTML,
     )
     await callback.answer()
+
+
+@router.callback_query(
+    CreateReminderFSM.waiting_for_exact_time, F.data.startswith("exacttime:")
+)
+async def process_exact_time_choice(
+    callback: CallbackQuery,
+    state: FSMContext,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
+    """Выбор готового точного времени для 1-разового ежедневного напоминания."""
+    val = callback.data.split(":", 1)[1]
+    if val == "custom":
+        await callback.message.edit_text(
+            "✏️ Напишите точное время напоминания в формате <b>ЧЧ:ММ</b> (например, <code>09:30</code> или <code>14:00</code>):",
+            parse_mode=ParseMode.HTML,
+        )
+        await callback.answer()
+        return
+
+    await state.update_data(start_time=val, end_time=val)
+    await finalize_reminder_creation(
+        callback.message,
+        state,
+        interval_minutes=0,
+        is_callback=True,
+        reminder_repo=reminder_repo,
+        user_repo=user_repo,
+    )
+    await callback.answer()
+
+
+@router.message(CreateReminderFSM.waiting_for_exact_time)
+async def process_custom_exact_time_text(
+    message: Message,
+    state: FSMContext,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
+    """Ручной ввод точного времени для 1-разового ежедневного напоминания."""
+    text = message.text.strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})$", text)
+    if not m:
+        await message.answer(
+            "Некорректный формат! Введите время в виде <b>ЧЧ:ММ</b> (например, <code>09:15</code>):",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    h, m_val = int(m.group(1)), int(m.group(2))
+    if not (0 <= h <= 23 and 0 <= m_val <= 59):
+        await message.answer(
+            "Неверные часы или минуты. Введите время от 00:00 до 23:59."
+        )
+        return
+
+    exact_time_str = f"{h:02d}:{m_val:02d}"
+    await state.update_data(start_time=exact_time_str, end_time=exact_time_str)
+    await cleanup_previous_wizard_message(message, state)
+    await finalize_reminder_creation(
+        message,
+        state,
+        interval_minutes=0,
+        is_callback=False,
+        reminder_repo=reminder_repo,
+        user_repo=user_repo,
+    )
 
 
 @router.callback_query(
@@ -217,10 +322,11 @@ async def process_start_time_choice(
         await callback.answer()
         return
 
-    if val in ("now", "00:00", "day_start"):
+    if val in ("00:00", "day_start"):
         start_time_str = "00:00"
     else:
         start_time_str = val
+
 
     await state.update_data(start_time=start_time_str)
     await state.set_state(CreateReminderFSM.waiting_for_end_time)
@@ -615,23 +721,34 @@ async def finalize_reminder_creation(
     )
 
     if reminder_type == "recurring":
-        start_s = start_time or "00:00"
-        end_s = f" до {end_time}" if end_time else "до 23:59"
-        summary += (
-            f"📅 <b>Дни недели:</b> {format_days_list(days_of_week)}\n"
-            f"🕐 <b>Время показа:</b> с {start_s} {end_s}\n"
-        )
+        if interval_minutes == 0:
+            summary += (
+                f"📅 <b>Дни недели:</b> {format_days_list(days_of_week)}\n"
+                f"🕐 <b>Время напоминания:</b> в {start_time}\n"
+                f"⏰ <b>Режим:</b> 1 раз в день в точное время\n\n"
+                f"Бот пришлёт сообщение в назначенный час в выбранные дни."
+            )
+        else:
+            start_s = start_time or "00:00"
+            end_s = f"до {end_time}" if end_time else "до 23:59"
+            summary += (
+                f"📅 <b>Дни недели:</b> {format_days_list(days_of_week)}\n"
+                f"🕐 <b>Время показа:</b> с {start_s} {end_s}\n"
+                f"⏰ <b>Частота повтора:</b> каждые {format_interval(interval_minutes)} "
+                f"(пока не нажмёте ✅)\n\n"
+                f"Когда придёт напоминание, нажмите под ним <b>«✅ Сделано!»</b>, чтобы отключить повторы на сегодня."
+            )
     else:
         dt_obj = safe_fromisoformat(start_datetime, tz_obj=user_now.tzinfo)
         summary += f"🕐 <b>Первое напоминание:</b> {dt_obj.strftime('%d.%m.%Y %H:%M')}\n"
         if end_time:
             summary += f"🛑 <b>Напоминать до:</b> {end_time}\n"
+        summary += (
+            f"⏰ <b>Частота повтора:</b> каждые {format_interval(interval_minutes)} "
+            f"(пока не нажмёте ✅)\n\n"
+            f"Когда придёт напоминание, нажмите под ним <b>«✅ Сделано!»</b>, чтобы отключить повторы."
+        )
 
-    summary += (
-        f"⏰ <b>Частота повтора:</b> каждые {format_interval(interval_minutes)} "
-        f"(пока не нажмёте ✅)\n\n"
-        f"Когда придёт напоминание, нажмите под ним <b>«✅ Сделано!»</b>, чтобы отключить повторы."
-    )
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[

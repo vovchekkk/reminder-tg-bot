@@ -88,6 +88,25 @@ class TestRecurringReminderStrategy:
         }
         assert self.strategy.should_remind(rem, now) is True
 
+    def test_once_daily_reminder_trigger(self):
+        # Понедельник 10:00
+        rem = {
+            "days_of_week": "0",
+            "start_time": "10:00",
+            "interval_minutes": 0,  # Режим 1 раз в день
+            "last_reminded_at": None,
+            "last_completed_date": None,
+        }
+        # До 10:00 (например, 09:59) -> не должно срабатывать
+        assert self.strategy.should_remind(rem, datetime(2026, 9, 28, 9, 59, tzinfo=timezone.utc)) is False
+        # В 10:00 -> должно сработать
+        assert self.strategy.should_remind(rem, datetime(2026, 9, 28, 10, 0, tzinfo=timezone.utc)) is True
+        # После отправки сегодня (last_reminded_at = 2026-09-28T10:00:00) -> второй раз за день не срабатывает
+        rem["last_reminded_at"] = "2026-09-28T10:00:00+00:00"
+        assert self.strategy.should_remind(rem, datetime(2026, 9, 28, 10, 30, tzinfo=timezone.utc)) is False
+        assert self.strategy.should_remind(rem, datetime(2026, 9, 28, 15, 0, tzinfo=timezone.utc)) is False
+
+
 
 class TestOneTimeReminderStrategy:
     def setup_method(self):

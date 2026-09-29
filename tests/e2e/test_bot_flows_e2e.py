@@ -151,23 +151,28 @@ async def test_wizard_recurring_reminder_e2e(e2e_setup):
     await dp.feed_update(bot, make_callback_update(user_id, "preset_days:weekdays", 13))
     calls.clear()
 
-    # 5. Подтверждение дней
+    # 5. Подтверждение дней -> выбор режима
     await dp.feed_update(bot, make_callback_update(user_id, "days_confirmed", 14))
+    assert any(isinstance(c, EditMessageText) and "Как напоминать в эти дни" in c.text for c in calls)
+    calls.clear()
+
+    # 5b. Выбор режима: Повторяющиеся напоминания
+    await dp.feed_update(bot, make_callback_update(user_id, "recmode:repeating", 15))
     assert any(isinstance(c, EditMessageText) and "С какого времени начинать" in c.text for c in calls)
     calls.clear()
 
     # 6. Выбор времени старта: С начала дня (00:00)
-    await dp.feed_update(bot, make_callback_update(user_id, "starttime:00:00", 15))
+    await dp.feed_update(bot, make_callback_update(user_id, "starttime:00:00", 16))
     assert any(isinstance(c, EditMessageText) and "До скольки напоминать" in c.text for c in calls)
     calls.clear()
 
     # 7. Выбор времени окончания: До конца дня (23:59)
-    await dp.feed_update(bot, make_callback_update(user_id, "endtime:23:59", 16))
+    await dp.feed_update(bot, make_callback_update(user_id, "endtime:23:59", 17))
     assert any(isinstance(c, EditMessageText) and "Как часто напоминать" in c.text for c in calls)
     calls.clear()
 
     # 8. Выбор интервала: 30 минут
-    await dp.feed_update(bot, make_callback_update(user_id, "interval:30", 17))
+    await dp.feed_update(bot, make_callback_update(user_id, "interval:30", 18))
     assert any(isinstance(c, EditMessageText) and "Напоминание успешно создано" in c.text for c in calls)
 
     # Проверяем, что в репозитории реально сохранилось напоминание
@@ -178,6 +183,7 @@ async def test_wizard_recurring_reminder_e2e(e2e_setup):
     assert rem["reminder_type"] == "recurring"
     assert rem["interval_minutes"] == 30
     assert rem["days_of_week"] == "0,1,2,3,4"
+
     assert rem["start_time"] == "00:00"
     assert rem["end_time"] == "23:59"
     assert rem["is_active"] == 1
@@ -242,3 +248,94 @@ async def test_expired_button_fallback_e2e(e2e_setup):
     edit_markup_calls = [c for c in calls if isinstance(c, EditMessageReplyMarkup)]
     assert len(edit_markup_calls) > 0
     assert edit_markup_calls[0].reply_markup is None
+
+
+@pytest.mark.asyncio
+async def test_wizard_once_daily_reminder_e2e(e2e_setup):
+    """E2E тест создания напоминания '1 раз в день в точное время'."""
+    bot = e2e_setup["bot"]
+    dp = e2e_setup["dp"]
+    reminder_repo = e2e_setup["reminder_repo"]
+    user_repo = e2e_setup["user_repo"]
+    calls = e2e_setup["calls"]
+    user_id = 5555
+    user_repo.set_user_timezone(user_id, "Europe/Moscow")
+
+    # 1. Запуск
+    await dp.feed_update(bot, make_callback_update(user_id, "start_wizard", 60))
+    calls.clear()
+
+    # 2. Текст
+    await dp.feed_update(bot, make_message_update(user_id, "Полить цветы", 61))
+    calls.clear()
+
+    # 3. Тип: recurring
+    await dp.feed_update(bot, make_callback_update(user_id, "type:recurring", 62))
+    calls.clear()
+
+    # 4. Дни: все дни
+    await dp.feed_update(bot, make_callback_update(user_id, "preset_days:all", 63))
+    calls.clear()
+
+    # 5. Подтверждение дней
+    await dp.feed_update(bot, make_callback_update(user_id, "days_confirmed", 64))
+    calls.clear()
+
+    # 6. Режим: 1 раз в день в точное время
+    await dp.feed_update(bot, make_callback_update(user_id, "recmode:once", 65))
+    assert any(isinstance(c, EditMessageText) and "Во сколько прислать" in c.text for c in calls)
+    calls.clear()
+
+    # 7. Выбор точного времени: 10:00
+    await dp.feed_update(bot, make_callback_update(user_id, "exacttime:10:00", 66))
+    assert any(isinstance(c, EditMessageText) and "Напоминание успешно создано" in c.text for c in calls)
+
+    user_rems = reminder_repo.get_user_reminders(user_id)
+    assert len(user_rems) == 1
+    rem = user_rems[0]
+    assert rem["text"] == "Полить цветы"
+    assert rem["interval_minutes"] == 0
+    assert rem["start_time"] == "10:00"
+
+
+@pytest.mark.asyncio
+async def test_done_test_button_does_not_disable_reminder_e2e(e2e_setup):
+    """E2E тест: кнопка 'Сделано' у тестового напоминания не отключает напоминание на сегодня."""
+    bot = e2e_setup["bot"]
+    dp = e2e_setup["dp"]
+    reminder_repo = e2e_setup["reminder_repo"]
+    calls = e2e_setup["calls"]
+    user_id = 6666
+
+    rem_id = reminder_repo.add_reminder(
+        user_id=user_id,
+        text="Тестовая проверка кнопки",
+        reminder_type="recurring",
+        days_of_week="0,1,2,3,4,5,6",
+        interval_minutes=60,
+    )
+
+    # 1. Запуск тестового триггера
+    await dp.feed_update(bot, make_callback_update(user_id, f"test_trigger:{rem_id}", 70))
+    send_msg = [c for c in calls if isinstance(c, SendMessage)]
+    assert len(send_msg) > 0
+    # Проверяем, что кнопка имеет callback_data "done_test:..."
+    button = send_msg[0].reply_markup.inline_keyboard[0][0]
+    assert button.callback_data == f"done_test:{rem_id}"
+    calls.clear()
+
+    # 2. Нажатие на "done_test:..."
+    await dp.feed_update(bot, make_callback_update(user_id, f"done_test:{rem_id}", 71))
+
+    # Проверяем, что пользователю показан alert
+    answer_calls = [c for c in calls if isinstance(c, AnswerCallbackQuery)]
+    assert len(answer_calls) > 0
+    assert answer_calls[0].show_alert is True
+    assert "НЕ отключает его на текущий день" in answer_calls[0].text
+
+    # Проверяем, что last_completed_date осталась None!
+    rem = reminder_repo.get_reminder(rem_id)
+    assert rem["last_completed_date"] is None
+    assert rem["is_active"] == 1
+    assert rem["is_completed"] == 0
+

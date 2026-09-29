@@ -30,18 +30,20 @@ def get_timezone_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_done_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
+def get_done_keyboard(reminder_id: int, is_test: bool = False) -> InlineKeyboardMarkup:
     """Кнопка подтверждения выполнения напоминания."""
+    cb_data = f"done_test:{reminder_id}" if is_test else f"done:{reminder_id}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="✅ Сделано!",
-                    callback_data=f"done:{reminder_id}",
+                    callback_data=cb_data,
                 )
             ]
         ]
     )
+
 
 
 def get_type_keyboard() -> InlineKeyboardMarkup:
@@ -153,6 +155,57 @@ def get_interval_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def get_recurring_mode_keyboard() -> InlineKeyboardMarkup:
+    """Выбор режима повторяющегося напоминания: 1 раз в день или с интервалом."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔔 1 раз в день в точное время",
+                    callback_data="recmode:once",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔁 С повторами в течение дня",
+                    callback_data="recmode:repeating",
+                )
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
+def get_exact_time_keyboard() -> InlineKeyboardMarkup:
+    """Выбор точного времени для напоминания 1 раз в день."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="08:00", callback_data="exacttime:08:00"),
+                InlineKeyboardButton(text="09:00", callback_data="exacttime:09:00"),
+                InlineKeyboardButton(text="10:00", callback_data="exacttime:10:00"),
+            ],
+            [
+                InlineKeyboardButton(text="12:00", callback_data="exacttime:12:00"),
+                InlineKeyboardButton(text="14:00", callback_data="exacttime:14:00"),
+                InlineKeyboardButton(text="16:00", callback_data="exacttime:16:00"),
+            ],
+            [
+                InlineKeyboardButton(text="18:00", callback_data="exacttime:18:00"),
+                InlineKeyboardButton(text="20:00", callback_data="exacttime:20:00"),
+                InlineKeyboardButton(text="21:00", callback_data="exacttime:21:00"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Ввести другое время",
+                    callback_data="exacttime:custom",
+                )
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
 def get_start_time_keyboard() -> InlineKeyboardMarkup:
     """Выбор времени начала показа напоминания."""
     return InlineKeyboardMarkup(
@@ -178,7 +231,7 @@ def get_start_time_keyboard() -> InlineKeyboardMarkup:
                     text="С 12:00", callback_data="starttime:12:00"
                 ),
                 InlineKeyboardButton(
-                    text="Прямо сейчас", callback_data="starttime:now"
+                    text="С 14:00", callback_data="starttime:14:00"
                 ),
             ],
             [
@@ -190,6 +243,7 @@ def get_start_time_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
         ]
     )
+
 
 
 def get_end_time_keyboard() -> InlineKeyboardMarkup:

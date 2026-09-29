@@ -58,14 +58,18 @@ def render_reminders_list(
 
         short_title = r["text"][:30] + ("..." if len(r["text"]) > 30 else "")
         text += (
-            f"{status_icon} <b>ID {r['id']}: {html.escape(short_title)}</b>\n"
+            f"{status_icon} <b>{html.escape(short_title)}</b>\n"
             f"   • Тип: {type_str}\n"
-            f"   • Повтор: каждые {interval_str}\n"
         )
         if r["reminder_type"] == "recurring":
-            start_s = r["start_time"] or "00:00"
-            end_s = f" до {r['end_time']}" if r.get("end_time") else ""
-            text += f"   • Время: с {start_s}{end_s}\n"
+            if r.get("interval_minutes", 60) == 0:
+                text += f"   • Режим: 1 раз в день в {r.get('start_time', '00:00')}\n"
+            else:
+                interval_str = format_interval(r["interval_minutes"])
+                text += f"   • Повтор: каждые {interval_str}\n"
+                start_s = r["start_time"] or "00:00"
+                end_s = f" до {r['end_time']}" if r.get("end_time") else ""
+                text += f"   • Время: с {start_s}{end_s}\n"
         elif r["reminder_type"] == "one_time" and r["start_datetime"]:
             try:
                 dt_obj = safe_fromisoformat(
@@ -84,11 +88,12 @@ def render_reminders_list(
         buttons.append(
             [
                 InlineKeyboardButton(
-                    text=f"{status_icon} ID {r['id']}: {short_title}",
+                    text=f"{status_icon} {short_title}",
                     callback_data=f"manage_rem:{r['id']}",
                 )
             ]
         )
+
 
     buttons.append(
         [
@@ -164,16 +169,20 @@ async def callback_manage_reminder(
     )
 
     info = (
-        f"⚙️ <b>Управление напоминанием #{rem['id']}</b>\n\n"
+        f"⚙️ <b>Управление напоминанием</b>\n\n"
         f"📌 <b>Текст:</b> {html.escape(rem['text'])}\n"
         f"📊 <b>Статус:</b> {status}\n"
         f"🔁 <b>Тип:</b> {type_str}\n"
-        f"⏰ <b>Интервал повтора:</b> каждые {format_interval(rem['interval_minutes'])}\n"
     )
     if rem["reminder_type"] == "recurring":
-        start_s = rem["start_time"] or "00:00"
-        end_s = f" до {rem['end_time']}" if rem.get("end_time") else ""
-        info += f"🕐 <b>Время показа:</b> с {start_s}{end_s}\n"
+        if rem.get("interval_minutes", 60) == 0:
+            info += f"⏰ <b>Режим:</b> 1 раз в день\n"
+            info += f"🕐 <b>Время напоминания:</b> в {rem.get('start_time', '00:00')}\n"
+        else:
+            info += f"⏰ <b>Интервал повтора:</b> каждые {format_interval(rem['interval_minutes'])}\n"
+            start_s = rem["start_time"] or "00:00"
+            end_s = f" до {rem['end_time']}" if rem.get("end_time") else ""
+            info += f"🕐 <b>Время показа:</b> с {start_s}{end_s}\n"
     elif rem["reminder_type"] == "one_time" and rem["start_datetime"]:
         try:
             dt_obj = safe_fromisoformat(
@@ -251,16 +260,55 @@ async def callback_test_trigger(
         return
 
     await callback.answer("Отправляю тестовое напоминание...")
+    if rem.get("interval_minutes", 60) == 0:
+        desc = f"В назначенные дни приходит 1 раз в {rem.get('start_time', 'указанное время')}."
+    else:
+        desc = f"Интервал повтора: каждые {format_interval(rem['interval_minutes'])}, пока не нажмёте галочку."
+
     await bot.send_message(
         chat_id=callback.from_user.id,
         text=(
             f"🔔 <b>НАПОМИНАНИЕ (тестовая проверка)!</b>\n\n"
             f"📌 <b>{html.escape(rem['text'])}</b>\n\n"
-            f"<i>Интервал повтора: каждые {format_interval(rem['interval_minutes'])}, пока не нажмёте галочку.</i>"
+            f"<i>{desc}</i>"
         ),
-        reply_markup=get_done_keyboard(rem["id"]),
+        reply_markup=get_done_keyboard(rem["id"], is_test=True),
         parse_mode=ParseMode.HTML,
     )
+
+
+@router.callback_query(F.data.startswith("done_test:"))
+async def callback_done_test_button(
+    callback: CallbackQuery,
+    reminder_repo: Optional[IReminderRepository] = None,
+):
+    """Обработка кнопки «✅ Сделано!» для тестового напоминания."""
+    r_repo = reminder_repo or db.reminders
+    rem_id = int(callback.data.split(":")[1])
+    rem = r_repo.get_reminder(rem_id)
+
+    # Всплывающее модальное окно (alert)
+    await callback.answer(
+        "ℹ️ Это тестовое напоминание!\n\n"
+        "Нажатие кнопки «Сделано» на тестовом напоминании НЕ отключает его на текущий день. "
+        "Основное напоминание сработает строго по расписанию!",
+        show_alert=True,
+    )
+
+    rem_title = rem["text"] if rem else "Напоминание"
+    congrats_text = (
+        f"✅ <b>Тестовая проверка завершена!</b> 🎉\n\n"
+        f"📌 «{html.escape(rem_title)}»\n\n"
+        f"<i>💡 Напоминание по-прежнему активно на сегодня и сработает по расписанию.</i>"
+    )
+
+    try:
+        await callback.message.edit_text(
+            congrats_text, reply_markup=None, parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.warning(f"Не удалось обновить сообщение с тестовым напоминанием: {e}")
+
 
 
 @router.callback_query(F.data.startswith("done:"))
