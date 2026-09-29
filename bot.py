@@ -495,10 +495,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="📋 Мои напоминания"),
             ],
             [
-                KeyboardButton(text="⚡ Физра (Пн, Пт каждый час)"),
                 KeyboardButton(text="⚙️ Часовой пояс"),
-            ],
-            [
                 KeyboardButton(text="ℹ️ Помощь"),
             ],
         ],
@@ -604,11 +601,22 @@ def get_days_keyboard(selected_days: Set[int]) -> InlineKeyboardMarkup:
         else "не выбрано"
     )
 
-    action_row = [
+    action_row1 = [
+        InlineKeyboardButton(
+            text="Выбрать все", callback_data="preset_days:all"
+        ),
         InlineKeyboardButton(
             text="Выбрать будни", callback_data="preset_days:weekdays"
         ),
-        InlineKeyboardButton(text="Сброс", callback_data="preset_days:clear"),
+    ]
+
+    action_row2 = [
+        InlineKeyboardButton(
+            text="Выбрать выходные", callback_data="preset_days:weekends"
+        ),
+        InlineKeyboardButton(
+            text="Сброс", callback_data="preset_days:clear"
+        ),
     ]
 
     confirm_row = [
@@ -622,7 +630,7 @@ def get_days_keyboard(selected_days: Set[int]) -> InlineKeyboardMarkup:
     ]
 
     return InlineKeyboardMarkup(
-        inline_keyboard=[row1, row2, action_row, confirm_row, cancel_row]
+        inline_keyboard=[row1, row2, action_row1, action_row2, confirm_row, cancel_row]
     )
 
 
@@ -772,8 +780,6 @@ async def cmd_start(message: Message, state: FSMContext):
         f"1. В назначенное время бот присылает сообщение с кнопкой <b>«✅ Сделано!»</b>.\n"
         f"2. Если вы нажимаете галочку — бот вас похвалит (<i>«Ура, вы молодец!»</i>) и перестанет напоминать.\n"
         f"3. <b>Если не нажали галочку</b> — бот будет повторять напоминание через заданный интервал (например, каждый час)!\n\n"
-        f"⚡ <b>Быстрый старт:</b>\n"
-        f"Нажмите кнопку <b>«⚡ Физра (Пн, Пт каждый час)»</b> для мгновенного создания задачи.\n\n"
         f"🌍 <b>Ваш часовой пояс:</b> <code>{user_tz}</code>\n"
         f"🕒 <i>Текущее местное время: {now_str}</i>\n"
         f"<i>(Чтобы сменить пояс или определить его по геолокации — нажмите «⚙️ Часовой пояс»)</i>"
@@ -797,7 +803,6 @@ async def cmd_help(message: Message):
         "   - Автоматически по геопозиции (кнопка в 1 клик)\n"
         "   - Выбор из списка городов\n"
         "   - Ввод любого UTC смещения\n\n"
-        "• <b>⚡ Физра (Пн, Пт каждый час)</b> — создать напоминание о тесте по физре в 1 клик!\n\n"
         "• <b>📋 Мои напоминания</b> — список всех задач:\n"
         "   - Тестовая отправка прямо сейчас (кнопка «🔔 Проверить сейчас»)\n"
         "   - Пауза / возобновление\n"
@@ -1285,13 +1290,13 @@ async def process_reminder_text(message: Message, state: FSMContext):
     CreateReminderFSM.choosing_type, F.data == "type:recurring"
 )
 async def choose_recurring_type(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(reminder_type="recurring", selected_days=[0, 4])
+    await state.update_data(reminder_type="recurring", selected_days=[])
     await state.set_state(CreateReminderFSM.choosing_days)
     await callback.message.edit_text(
         "📅 <b>Шаг 3 из 4: Выберите дни недели</b>\n\n"
         "Нажимайте на кнопки, чтобы отметить нужные дни.\n"
         "Когда закончите выбор, нажмите <b>«➡️ Далее»</b>:",
-        reply_markup=get_days_keyboard({0, 4}),
+        reply_markup=get_days_keyboard(set()),
         parse_mode=ParseMode.HTML,
     )
     await callback.answer()
@@ -1322,8 +1327,12 @@ async def toggle_day_selection(callback: CallbackQuery, state: FSMContext):
 )
 async def preset_days_action(callback: CallbackQuery, state: FSMContext):
     action = callback.data.split(":")[1]
-    if action == "weekdays":
+    if action == "all":
+        selected = {0, 1, 2, 3, 4, 5, 6}
+    elif action == "weekdays":
         selected = {0, 1, 2, 3, 4}
+    elif action == "weekends":
+        selected = {5, 6}
     else:
         selected = set()
 
