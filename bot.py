@@ -172,6 +172,7 @@ class Database:
                     days_of_week TEXT,                -- '0,4' (0=Пн, 4=Пт)
                     interval_minutes INTEGER NOT NULL DEFAULT 60,
                     start_time TEXT,                  -- '09:00'
+                    end_time TEXT,                    -- '22:00'
                     start_datetime TEXT,              -- для one_time: ISO формат
                     is_active INTEGER NOT NULL DEFAULT 1,
                     last_reminded_at TEXT,            -- ISO формат времени последнего сообщения
@@ -181,6 +182,12 @@ class Database:
                 )
                 """
             )
+            # Миграция для существующей базы (добавление end_time)
+            try:
+                cursor.execute("ALTER TABLE reminders ADD COLUMN end_time TEXT")
+            except sqlite3.OperationalError:
+                pass
+
             # Таблица пользователей (часовые пояса)
             cursor.execute(
                 """
@@ -229,6 +236,7 @@ class Database:
         interval_minutes: int = 60,
         days_of_week: Optional[str] = None,
         start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
         start_datetime: Optional[str] = None,
     ) -> int:
         now_iso = datetime.now().isoformat()
@@ -238,9 +246,9 @@ class Database:
                 """
                 INSERT INTO reminders (
                     user_id, text, reminder_type, days_of_week,
-                    interval_minutes, start_time, start_datetime,
+                    interval_minutes, start_time, end_time, start_datetime,
                     is_active, last_completed_date, is_completed, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, 0, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 0, ?)
                 """,
                 (
                     user_id,
@@ -249,6 +257,7 @@ class Database:
                     days_of_week,
                     interval_minutes,
                     start_time,
+                    end_time,
                     start_datetime,
                     now_iso,
                 ),
@@ -441,6 +450,25 @@ def parse_time_or_delay(text: str, base_time: datetime) -> Optional[datetime]:
     return None
 
 
+def is_time_in_range(
+    start_str: Optional[str], end_str: Optional[str], current_time: time
+) -> bool:
+    """Проверяет, входит ли current_time в интервал со start_str до end_str."""
+    if not start_str and not end_str:
+        return True
+    try:
+        sh, sm = map(int, start_str.split(":")) if start_str else (0, 0)
+        eh, em = map(int, end_str.split(":")) if end_str else (23, 59)
+        start_t = time(sh, sm, 0, 0)
+        end_t = time(eh, em, 59, 999999)
+        if start_t <= end_t:
+            return start_t <= current_time <= end_t
+        else:
+            return current_time >= start_t or current_time <= end_t
+    except Exception:
+        return True
+
+
 # ---------------------------------------------------------
 # FSM (СОСТОЯНИЯ)
 # ---------------------------------------------------------
@@ -449,7 +477,9 @@ class CreateReminderFSM(StatesGroup):
     choosing_type = State()
     choosing_days = State()
     waiting_for_start_time = State()
+    waiting_for_end_time = State()
     waiting_for_onetime_dt = State()
+    waiting_for_onetime_end_time = State()
     choosing_interval = State()
     waiting_for_custom_interval = State()
 
@@ -655,6 +685,78 @@ def get_start_time_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def get_end_time_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="До 18:00", callback_data="endtime:18:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 20:00", callback_data="endtime:20:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 21:00", callback_data="endtime:21:00"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="До 22:00", callback_data="endtime:22:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 23:00", callback_data="endtime:23:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 23:59", callback_data="endtime:23:59"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Ввести другое время",
+                    callback_data="endtime:custom",
+                )
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
+def get_onetime_end_time_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="До 20:00", callback_data="onetime_end:20:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 21:00", callback_data="onetime_end:21:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 22:00", callback_data="onetime_end:22:00"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="До 23:00", callback_data="onetime_end:23:00"
+                ),
+                InlineKeyboardButton(
+                    text="До 23:59", callback_data="onetime_end:23:59"
+                ),
+                InlineKeyboardButton(
+                    text="Без ограничений", callback_data="onetime_end:none"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Ввести другое время",
+                    callback_data="onetime_end:custom",
+                )
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
 def get_onetime_quick_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -767,7 +869,7 @@ async def cmd_help(message: Message):
         "   - Свой текст сообщения\n"
         "   - Выбор дней недели или одноразовое напоминание\n"
         "   - Своя частота повторов (если не нажали ✅)\n"
-        "   - Время старта\n\n"
+        "   - Диапазон времени (со скольки и до скольки напоминать, чтобы не беспокоить ночью)\n\n"
         "• <b>⚙️ Часовой пояс</b> — настройка местного времени:\n"
         "   - Выбор из списка городов\n"
         "   - Ввод любого UTC смещения вручную\n\n"
@@ -899,14 +1001,17 @@ def render_reminders_list(user_id: int):
             f"   • Тип: {type_str}\n"
             f"   • Повтор: каждые {interval_str}\n"
         )
-        if r["reminder_type"] == "recurring" and r["start_time"]:
-            text += f"   • Старт: с {r['start_time']}\n"
+        if r["reminder_type"] == "recurring":
+            start_s = r["start_time"] or "00:00"
+            end_s = f" до {r['end_time']}" if r.get("end_time") else ""
+            text += f"   • Время: с {start_s}{end_s}\n"
         elif r["reminder_type"] == "one_time" and r["start_datetime"]:
             try:
                 dt_obj = safe_fromisoformat(
                     r["start_datetime"], tz_obj=user_now.tzinfo
                 )
-                text += f"   • Старт: {dt_obj.strftime('%d.%m.%Y %H:%M')}\n"
+                end_s = f" (до {r['end_time']})" if r.get("end_time") else ""
+                text += f"   • Старт: {dt_obj.strftime('%d.%m.%Y %H:%M')}{end_s}\n"
             except Exception:
                 pass
 
@@ -984,14 +1089,17 @@ async def callback_manage_reminder(callback: CallbackQuery):
         f"🔁 <b>Тип:</b> {type_str}\n"
         f"⏰ <b>Интервал повтора:</b> каждые {format_interval(rem['interval_minutes'])}\n"
     )
-    if rem["reminder_type"] == "recurring" and rem["start_time"]:
-        info += f"🕐 <b>Время начала:</b> {rem['start_time']}\n"
+    if rem["reminder_type"] == "recurring":
+        start_s = rem["start_time"] or "00:00"
+        end_s = f" до {rem['end_time']}" if rem.get("end_time") else ""
+        info += f"🕐 <b>Время показа:</b> с {start_s}{end_s}\n"
     elif rem["reminder_type"] == "one_time" and rem["start_datetime"]:
         try:
             dt_obj = safe_fromisoformat(
                 rem["start_datetime"], tz_obj=user_now.tzinfo
             )
-            info += f"🕐 <b>Начало:</b> {dt_obj.strftime('%d.%m.%Y %H:%M')}\n"
+            end_s = f" (до {rem['end_time']})" if rem.get("end_time") else ""
+            info += f"🕐 <b>Начало:</b> {dt_obj.strftime('%d.%m.%Y %H:%M')}{end_s}\n"
         except Exception:
             pass
 
@@ -1112,7 +1220,7 @@ async def callback_done_button(callback: CallbackQuery):
 async def start_wizard(event: Message | CallbackQuery, state: FSMContext):
     await state.clear()
     prompt_text = (
-        "📝 <b>Шаг 1 из 4: Текст напоминания</b>\n\n"
+        "📝 <b>Шаг 1: Текст напоминания</b>\n\n"
         "Напишите сообщение, о чём вам напомнить.\n"
         "<i>Например: «Сделать тест по физре», «Выпить витамины», «Сдать отчёт»</i>"
     )
@@ -1154,7 +1262,7 @@ async def process_reminder_text(message: Message, state: FSMContext):
 
     await message.answer(
         f"📌 Текст: <b>{html.escape(text)}</b>\n\n"
-        f"<b>Шаг 2 из 4: Выберите тип напоминания:</b>\n"
+        f"<b>Шаг 2: Выберите тип напоминания:</b>\n"
         f"• <b>🔁 По дням недели</b> — повторяется в выбранные дни (например, каждый Пн и Пт)\n"
         f"• <b>⏱️ Одноразовое</b> — напомнить один раз (в конкретную дату/время)",
         reply_markup=get_type_keyboard(),
@@ -1169,7 +1277,7 @@ async def choose_recurring_type(callback: CallbackQuery, state: FSMContext):
     await state.update_data(reminder_type="recurring", selected_days=[])
     await state.set_state(CreateReminderFSM.choosing_days)
     await callback.message.edit_text(
-        "📅 <b>Шаг 3 из 4: Выберите дни недели</b>\n\n"
+        "📅 <b>Шаг 3: Выберите дни недели:</b>\n\n"
         "Нажимайте на кнопки, чтобы отметить нужные дни.\n"
         "Когда закончите выбор, нажмите <b>«➡️ Далее»</b>:",
         reply_markup=get_days_keyboard(set()),
@@ -1266,7 +1374,14 @@ async def process_start_time_choice(
         start_time_str = val
 
     await state.update_data(start_time=start_time_str)
-    await prompt_interval_selection(callback.message, state, is_edit=True)
+    await state.set_state(CreateReminderFSM.waiting_for_end_time)
+    await callback.message.edit_text(
+        f"🕐 Начало: <b>с {start_time_str}</b>\n\n"
+        f"🛑 <b>До скольки напоминать в эти дни?</b>\n"
+        f"<i>(После этого времени бот перестанет присылать повторы до следующего назначенного дня, чтобы не беспокоить ночью)</i>",
+        reply_markup=get_end_time_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
     await callback.answer()
 
 
@@ -1290,6 +1405,55 @@ async def process_custom_start_time_text(message: Message, state: FSMContext):
 
     start_time_str = f"{h:02d}:{m_val:02d}"
     await state.update_data(start_time=start_time_str)
+    await state.set_state(CreateReminderFSM.waiting_for_end_time)
+    await message.answer(
+        f"🕐 Начало: <b>с {start_time_str}</b>\n\n"
+        f"🛑 <b>До скольки напоминать в эти дни?</b>\n"
+        f"<i>(После этого времени бот перестанет присылать повторы до следующего назначенного дня, чтобы не беспокоить ночью)</i>",
+        reply_markup=get_end_time_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@router.callback_query(
+    CreateReminderFSM.waiting_for_end_time, F.data.startswith("endtime:")
+)
+async def process_end_time_choice(callback: CallbackQuery, state: FSMContext):
+    val = callback.data.split(":")[1]
+    if val == "custom":
+        await callback.message.edit_text(
+            "✏️ Напишите время окончания в формате <b>ЧЧ:ММ</b> (например, <code>22:00</code> или <code>23:30</code>):",
+            parse_mode=ParseMode.HTML,
+        )
+        await callback.answer()
+        return
+
+    end_time_str = val
+    await state.update_data(end_time=end_time_str)
+    await prompt_interval_selection(callback.message, state, is_edit=True)
+    await callback.answer()
+
+
+@router.message(CreateReminderFSM.waiting_for_end_time)
+async def process_custom_end_time_text(message: Message, state: FSMContext):
+    text = message.text.strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})$", text)
+    if not m:
+        await message.answer(
+            "Некорректный формат! Введите время в виде <b>ЧЧ:ММ</b> (например, <code>22:00</code>):",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    h, m_val = int(m.group(1)), int(m.group(2))
+    if not (0 <= h <= 23 and 0 <= m_val <= 59):
+        await message.answer(
+            "Неверные часы или минуты. Введите время от 00:00 до 23:59."
+        )
+        return
+
+    end_time_str = f"{h:02d}:{m_val:02d}"
+    await state.update_data(end_time=end_time_str)
     await prompt_interval_selection(message, state, is_edit=False)
 
 
@@ -1300,7 +1464,7 @@ async def choose_onetime_type(callback: CallbackQuery, state: FSMContext):
     await state.update_data(reminder_type="one_time")
     await state.set_state(CreateReminderFSM.waiting_for_onetime_dt)
     await callback.message.edit_text(
-        "⏱️ <b>Шаг 3 из 4: Когда отправить первое напоминание?</b>\n\n"
+        "⏱️ <b>Когда отправить первое напоминание?</b>\n\n"
         "Выберите быстрый вариант или напишите текстом\n"
         "(например: <code>18:30</code>, <code>+45m</code>, <code>+2h</code> или <code>30.09 14:00</code>):",
         reply_markup=get_onetime_quick_keyboard(),
@@ -1351,7 +1515,14 @@ async def process_quick_onetime(callback: CallbackQuery, state: FSMContext):
 
     if target_dt:
         await state.update_data(start_datetime=target_dt.isoformat())
-        await prompt_interval_selection(callback.message, state, is_edit=True)
+        await state.set_state(CreateReminderFSM.waiting_for_onetime_end_time)
+        await callback.message.edit_text(
+            f"🕐 Первое напоминание: <b>{target_dt.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+            f"🛑 <b>До скольки напоминать (если вы не нажмёте ✅)?</b>\n"
+            f"<i>(После этого времени бот перестанет присылать повторные сообщения)</i>",
+            reply_markup=get_onetime_end_time_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
     await callback.answer()
 
 
@@ -1368,6 +1539,55 @@ async def process_manual_onetime_dt(message: Message, state: FSMContext):
         return
 
     await state.update_data(start_datetime=parsed_dt.isoformat())
+    await state.set_state(CreateReminderFSM.waiting_for_onetime_end_time)
+    await message.answer(
+        f"🕐 Первое напоминание: <b>{parsed_dt.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+        f"🛑 <b>До скольки напоминать (если вы не нажмёте ✅)?</b>\n"
+        f"<i>(После этого времени бот перестанет присылать повторные сообщения)</i>",
+        reply_markup=get_onetime_end_time_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@router.callback_query(
+    CreateReminderFSM.waiting_for_onetime_end_time, F.data.startswith("onetime_end:")
+)
+async def process_onetime_end_choice(callback: CallbackQuery, state: FSMContext):
+    val = callback.data.split(":")[1]
+    if val == "custom":
+        await callback.message.edit_text(
+            "✏️ Напишите время окончания в формате <b>ЧЧ:ММ</b> (например, <code>22:00</code> или <code>23:30</code>):",
+            parse_mode=ParseMode.HTML,
+        )
+        await callback.answer()
+        return
+
+    end_time_str = None if val == "none" else val
+    await state.update_data(end_time=end_time_str)
+    await prompt_interval_selection(callback.message, state, is_edit=True)
+    await callback.answer()
+
+
+@router.message(CreateReminderFSM.waiting_for_onetime_end_time)
+async def process_custom_onetime_end_text(message: Message, state: FSMContext):
+    text = message.text.strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})$", text)
+    if not m:
+        await message.answer(
+            "Некорректный формат! Введите время в виде <b>ЧЧ:ММ</b> (например, <code>22:00</code>):",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    h, m_val = int(m.group(1)), int(m.group(2))
+    if not (0 <= h <= 23 and 0 <= m_val <= 59):
+        await message.answer(
+            "Неверные часы или минуты. Введите время от 00:00 до 23:59."
+        )
+        return
+
+    end_time_str = f"{h:02d}:{m_val:02d}"
+    await state.update_data(end_time=end_time_str)
     await prompt_interval_selection(message, state, is_edit=False)
 
 
@@ -1376,8 +1596,9 @@ async def prompt_interval_selection(
 ):
     await state.set_state(CreateReminderFSM.choosing_interval)
     prompt = (
-        "⏰ <b>Шаг 4 из 4: Как часто напоминать, если вы не нажали ✅?</b>\n\n"
-        "Бот будет присылать повторные сообщения с этим интервалом до тех пор, пока вы не нажмёте кнопку «✅ Сделано!»:"
+        "⏰ <b>Как часто напоминать, если вы не нажали ✅?</b>\n\n"
+        "Бот будет присылать повторные сообщения с этим интервалом (в пределах заданного диапазона времени), "
+        "пока вы не нажмёте кнопку «✅ Сделано!»:"
     )
     if is_edit:
         await message.edit_text(
@@ -1446,6 +1667,7 @@ async def finalize_reminder_creation(
     reminder_type = data["reminder_type"]
     days_of_week = data.get("days_of_week")
     start_time = data.get("start_time")
+    end_time = data.get("end_time")
     start_datetime = data.get("start_datetime")
 
     rem_id = db.add_reminder(
@@ -1455,6 +1677,7 @@ async def finalize_reminder_creation(
         interval_minutes=interval_minutes,
         days_of_week=days_of_week,
         start_time=start_time,
+        end_time=end_time,
         start_datetime=start_datetime,
     )
 
@@ -1468,13 +1691,17 @@ async def finalize_reminder_creation(
     )
 
     if reminder_type == "recurring":
+        start_s = start_time or "00:00"
+        end_s = f" до {end_time}" if end_time else "до 23:59"
         summary += (
             f"📅 <b>Дни недели:</b> {format_days_list(days_of_week)}\n"
-            f"🕐 <b>Время старта в эти дни:</b> {start_time}\n"
+            f"🕐 <b>Время показа:</b> с {start_s} {end_s}\n"
         )
     else:
         dt_obj = safe_fromisoformat(start_datetime, tz_obj=user_now.tzinfo)
         summary += f"🕐 <b>Первое напоминание:</b> {dt_obj.strftime('%d.%m.%Y %H:%M')}\n"
+        if end_time:
+            summary += f"🛑 <b>Напоминать до:</b> {end_time}\n"
 
     summary += (
         f"⏰ <b>Частота повтора:</b> каждые {format_interval(interval_minutes)} "
@@ -1534,13 +1761,11 @@ async def reminder_worker(bot: Bot):
                         if rem["last_completed_date"] == today_str:
                             continue
 
-                        if rem["start_time"]:
-                            try:
-                                sh, sm = map(int, rem["start_time"].split(":"))
-                                if now.time() < time(sh, sm):
-                                    continue
-                            except Exception:
-                                pass
+                        # Проверяем диапазон времени со start_time до end_time
+                        if not is_time_in_range(
+                            rem.get("start_time"), rem.get("end_time"), now.time()
+                        ):
+                            continue
 
                         if not rem["last_reminded_at"]:
                             should_remind = True
@@ -1566,6 +1791,13 @@ async def reminder_worker(bot: Bot):
                         )
                         if now < start_dt:
                             continue
+
+                        # Проверяем ограничение end_time (если задано)
+                        if rem.get("end_time"):
+                            if not is_time_in_range(
+                                None, rem.get("end_time"), now.time()
+                            ):
+                                continue
 
                         if not rem["last_reminded_at"]:
                             should_remind = True
