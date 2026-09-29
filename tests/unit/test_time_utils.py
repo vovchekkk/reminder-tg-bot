@@ -6,6 +6,7 @@ from app.services.time_utils import (
     format_interval,
     get_user_tz_obj,
     is_time_in_range,
+    parse_date_string,
     parse_time_or_delay,
     safe_fromisoformat,
 )
@@ -102,3 +103,60 @@ class TestTimeUtils:
         assert dt.hour == 14
         assert dt.minute == 30
         assert dt.tzinfo == tz
+
+    def test_parse_date_string(self):
+        from datetime import date
+        base = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+
+        # Относительные слова
+        d, err = parse_date_string("сегодня", base)
+        assert d == date(2026, 9, 29) and err is None
+
+        d, err = parse_date_string("завтра", base)
+        assert d == date(2026, 9, 30) and err is None
+
+        d, err = parse_date_string("послезавтра", base)
+        assert d == date(2026, 10, 1) and err is None
+
+        # Число месяца
+        d, err = parse_date_string("30", base)
+        assert d == date(2026, 9, 30) and err is None
+
+        d, err = parse_date_string("5", base)
+        assert d == date(2026, 10, 5) and err is None
+
+        # ДД.ММ
+        d, err = parse_date_string("30.09", base)
+        assert d == date(2026, 9, 30) and err is None
+
+        d, err = parse_date_string("29.09", base)
+        assert d == date(2026, 9, 29) and err is None
+
+        d, err = parse_date_string("28.09", base)
+        assert d is None and err == "past_date"
+
+        # ДД.ММ.ГГГГ и с годом
+        d, err = parse_date_string("15.10.2026", base)
+        assert d == date(2026, 10, 15) and err is None
+
+        d, err = parse_date_string("15.10.26", base)
+        assert d == date(2026, 10, 15) and err is None
+
+        d, err = parse_date_string("01.01.2027", base)
+        assert d == date(2027, 1, 1) and err is None
+
+        # Прошлый год
+        d, err = parse_date_string("01.01.2025", base)
+        assert d is None and err == "past_date"
+
+        # Некорректные календарные даты
+        d, err = parse_date_string("31.02.2026", base)
+        assert d is None and err == "invalid_date"
+
+        d, err = parse_date_string("31.04.2026", base)
+        assert d is None and err == "invalid_date"
+
+        # Некорректный формат
+        d, err = parse_date_string("привет", base)
+        assert d is None and err == "invalid_format"
+

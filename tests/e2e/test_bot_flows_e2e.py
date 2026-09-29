@@ -339,3 +339,137 @@ async def test_done_test_button_does_not_disable_reminder_e2e(e2e_setup):
     assert rem["is_active"] == 1
     assert rem["is_completed"] == 0
 
+
+@pytest.mark.asyncio
+async def test_wizard_onetime_exact_time_e2e(e2e_setup):
+    """E2E тест создания одноразового напоминания: 1 раз в точное время с выбором даты."""
+    bot = e2e_setup["bot"]
+    dp = e2e_setup["dp"]
+    reminder_repo = e2e_setup["reminder_repo"]
+    user_repo = e2e_setup["user_repo"]
+    calls = e2e_setup["calls"]
+    user_id = 7777
+    user_repo.set_user_timezone(user_id, "Europe/Moscow")
+
+    # 1. Старт создания
+    await dp.feed_update(bot, make_callback_update(user_id, "start_wizard", 80))
+    calls.clear()
+
+    # 2. Ввод текста
+    await dp.feed_update(bot, make_message_update(user_id, "Купить билеты в театр", 81))
+    calls.clear()
+
+    # 3. Выбор типа: одноразовое
+    await dp.feed_update(bot, make_callback_update(user_id, "type:one_time", 82))
+    assert any(isinstance(c, EditMessageText) and "Выберите дату напоминания" in c.text for c in calls)
+    calls.clear()
+
+    # 4. Выбор даты через кнопку (например, дата в будущем 2026-10-15)
+    await dp.feed_update(bot, make_callback_update(user_id, "setdate:2026-10-15", 83))
+    assert any(isinstance(c, EditMessageText) and "Как напомнить в этот день" in c.text for c in calls)
+    calls.clear()
+
+    # 5. Выбор режима: 1 раз в определенное время
+    await dp.feed_update(bot, make_callback_update(user_id, "onetime_mode:once", 84))
+    assert any(isinstance(c, EditMessageText) and "Во сколько отправить" in c.text for c in calls)
+    calls.clear()
+
+    # 6. Выбор точного времени: 14:00
+    await dp.feed_update(bot, make_callback_update(user_id, "exacttime:14:00", 85))
+    assert any(isinstance(c, EditMessageText) and "Напоминание успешно создано" in c.text for c in calls)
+
+    # Проверяем запись в базе
+    user_rems = reminder_repo.get_user_reminders(user_id)
+    assert len(user_rems) == 1
+    rem = user_rems[0]
+    assert rem["text"] == "Купить билеты в театр"
+    assert rem["reminder_type"] == "one_time"
+    assert rem["interval_minutes"] == 0
+    assert "2026-10-15T14:00:00" in rem["start_datetime"]
+    assert rem["start_time"] == "14:00"
+    assert rem["end_time"] == "14:00"
+
+
+@pytest.mark.asyncio
+async def test_wizard_onetime_repeating_e2e(e2e_setup):
+    """E2E тест создания повторяющегося одноразового напоминания с ручным вводом даты и года."""
+    bot = e2e_setup["bot"]
+    dp = e2e_setup["dp"]
+    reminder_repo = e2e_setup["reminder_repo"]
+    user_repo = e2e_setup["user_repo"]
+    calls = e2e_setup["calls"]
+    user_id = 8888
+    user_repo.set_user_timezone(user_id, "Europe/Moscow")
+
+    # 1. Старт
+    await dp.feed_update(bot, make_callback_update(user_id, "start_wizard", 90))
+    calls.clear()
+
+    # 2. Текст
+    await dp.feed_update(bot, make_message_update(user_id, "Подготовиться к сессии", 91))
+    calls.clear()
+
+    # 3. Тип: одноразовое
+    await dp.feed_update(bot, make_callback_update(user_id, "type:one_time", 92))
+    calls.clear()
+
+    # 4. Ручной ввод даты с годом: "20.12.2026"
+    await dp.feed_update(bot, make_message_update(user_id, "20.12.2026", 93))
+    assert any(isinstance(c, SendMessage) and "20.12.2026" in c.text and "Как напомнить в этот день" in c.text for c in calls)
+    calls.clear()
+
+    # 5. Выбор режима: повторяющиеся напоминания
+    await dp.feed_update(bot, make_callback_update(user_id, "onetime_mode:repeating", 94))
+    assert any(isinstance(c, EditMessageText) and "С какого времени начинать" in c.text for c in calls)
+    calls.clear()
+
+    # 6. Выбор времени старта: С 09:00
+    await dp.feed_update(bot, make_callback_update(user_id, "starttime:09:00", 95))
+    assert any(isinstance(c, EditMessageText) and "До скольки напоминать" in c.text for c in calls)
+    calls.clear()
+
+    # 7. Выбор времени окончания: До 21:00
+    await dp.feed_update(bot, make_callback_update(user_id, "onetime_end:21:00", 96))
+    assert any(isinstance(c, EditMessageText) and "Как часто напоминать" in c.text for c in calls)
+    calls.clear()
+
+    # 8. Выбор интервала: 60 минут
+    await dp.feed_update(bot, make_callback_update(user_id, "interval:60", 97))
+    assert any(isinstance(c, EditMessageText) and "Напоминание успешно создано" in c.text for c in calls)
+
+    user_rems = reminder_repo.get_user_reminders(user_id)
+    assert len(user_rems) == 1
+    rem = user_rems[0]
+    assert rem["text"] == "Подготовиться к сессии"
+    assert rem["reminder_type"] == "one_time"
+    assert rem["interval_minutes"] == 60
+    assert "2026-12-20T09:00:00" in rem["start_datetime"]
+    assert rem["end_time"] == "21:00"
+
+
+@pytest.mark.asyncio
+async def test_wizard_onetime_past_date_validation_e2e(e2e_setup):
+    """E2E тест: валидация даты в прошлом при создании одноразового напоминания."""
+    bot = e2e_setup["bot"]
+    dp = e2e_setup["dp"]
+    user_repo = e2e_setup["user_repo"]
+    calls = e2e_setup["calls"]
+    user_id = 9999
+    user_repo.set_user_timezone(user_id, "Europe/Moscow")
+
+    # 1. Старт и ввод текста
+    await dp.feed_update(bot, make_callback_update(user_id, "start_wizard", 100))
+    await dp.feed_update(bot, make_message_update(user_id, "Проверка валидации даты", 101))
+    await dp.feed_update(bot, make_callback_update(user_id, "type:one_time", 102))
+    calls.clear()
+
+    # 2. Ввод даты из прошлого: 01.01.2020
+    await dp.feed_update(bot, make_message_update(user_id, "01.01.2020", 103))
+    assert any(isinstance(c, SendMessage) and "Дата не может быть в прошлом" in c.text for c in calls)
+    calls.clear()
+
+    # 3. Ввод корректной будущей даты: 01.01.2027
+    await dp.feed_update(bot, make_message_update(user_id, "01.01.2027", 104))
+    assert any(isinstance(c, SendMessage) and "01.01.2027" in c.text and "Как напомнить в этот день" in c.text for c in calls)
+
+

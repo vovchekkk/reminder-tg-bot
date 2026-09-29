@@ -4,7 +4,9 @@ from app.keyboards import (
     get_end_time_keyboard,
     get_interval_keyboard,
     get_main_keyboard,
+    get_onetime_date_keyboard,
     get_onetime_end_time_keyboard,
+    get_onetime_mode_keyboard,
     get_onetime_quick_keyboard,
     get_reminder_control_keyboard,
     get_start_time_keyboard,
@@ -82,3 +84,21 @@ class TestKeyboards:
         kb_paused = get_reminder_control_keyboard(rem_paused)
         texts_paused = [b.text for row in kb_paused.inline_keyboard for b in row]
         assert any("Включить" in t for t in texts_paused)
+
+    def test_onetime_date_and_mode_keyboards(self):
+        from datetime import datetime, timezone
+        now = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+        kb_date = get_onetime_date_keyboard(now)
+        cbs_date = [b.callback_data for row in kb_date.inline_keyboard for b in row]
+        assert "setdate:2026-09-29" in cbs_date
+        assert "setdate:2026-09-30" in cbs_date
+        assert "setdate:2026-10-01" in cbs_date
+        assert "setdate:custom" in cbs_date
+        assert "cancel_wizard" in cbs_date
+
+        kb_mode = get_onetime_mode_keyboard()
+        cbs_mode = [b.callback_data for row in kb_mode.inline_keyboard for b in row]
+        assert "onetime_mode:once" in cbs_mode
+        assert "onetime_mode:repeating" in cbs_mode
+        assert "cancel_wizard" in cbs_mode
+

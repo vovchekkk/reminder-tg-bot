@@ -75,8 +75,12 @@ def render_reminders_list(
                 dt_obj = safe_fromisoformat(
                     r["start_datetime"], tz_obj=user_now.tzinfo
                 )
-                end_s = f" (до {r['end_time']})" if r.get("end_time") else ""
-                text += f"   • Старт: {dt_obj.strftime('%d.%m.%Y %H:%M')}{end_s}\n"
+                if r.get("interval_minutes", 60) == 0:
+                    text += f"   • Режим: 1 раз ({dt_obj.strftime('%d.%m.%Y в %H:%M')})\n"
+                else:
+                    end_s = f" до {r['end_time']}" if r.get("end_time") else ""
+                    text += f"   • Дата: {dt_obj.strftime('%d.%m.%Y')} (с {dt_obj.strftime('%H:%M')}{end_s})\n"
+                    text += f"   • Повтор: каждые {interval_str}\n"
             except Exception:
                 pass
 
@@ -188,8 +192,15 @@ async def callback_manage_reminder(
             dt_obj = safe_fromisoformat(
                 rem["start_datetime"], tz_obj=user_now.tzinfo
             )
-            end_s = f" (до {rem['end_time']})" if rem.get("end_time") else ""
-            info += f"🕐 <b>Начало:</b> {dt_obj.strftime('%d.%m.%Y %H:%M')}{end_s}\n"
+            if rem.get("interval_minutes", 60) == 0:
+                info += f"⏰ <b>Режим:</b> 1 раз в определенное время\n"
+                info += f"🕐 <b>Дата и время:</b> {dt_obj.strftime('%d.%m.%Y в %H:%M')}\n"
+            else:
+                info += f"📅 <b>Дата:</b> {dt_obj.strftime('%d.%m.%Y')}\n"
+                info += f"⏰ <b>Интервал повтора:</b> каждые {format_interval(rem['interval_minutes'])}\n"
+                start_s = dt_obj.strftime("%H:%M")
+                end_s = f" до {rem['end_time']}" if rem.get("end_time") else ""
+                info += f"🕐 <b>Время показа:</b> с {start_s}{end_s}\n"
         except Exception:
             pass
 
@@ -261,7 +272,17 @@ async def callback_test_trigger(
 
     await callback.answer("Отправляю тестовое напоминание...")
     if rem.get("interval_minutes", 60) == 0:
-        desc = f"В назначенные дни приходит 1 раз в {rem.get('start_time', 'указанное время')}."
+        if rem["reminder_type"] == "recurring":
+            desc = f"В назначенные дни приходит 1 раз в {rem.get('start_time', 'указанное время')}."
+        else:
+            dt_str = rem.get("start_time", "")
+            if rem.get("start_datetime"):
+                try:
+                    dt = safe_fromisoformat(rem["start_datetime"])
+                    dt_str = dt.strftime("%d.%m.%Y в %H:%M")
+                except Exception:
+                    pass
+            desc = f"Одноразовое напоминание на {dt_str}."
     else:
         desc = f"Интервал повтора: каждые {format_interval(rem['interval_minutes'])}, пока не нажмёте галочку."
 

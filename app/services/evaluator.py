@@ -89,13 +89,19 @@ class OneTimeReminderStrategy(IReminderStrategy):
             if not is_time_in_range(None, reminder.get("end_time"), now.time()):
                 return False
 
+        interval = reminder.get("interval_minutes", 60)
         last_reminded = reminder.get("last_reminded_at")
+
+        # Режим: 1 раз в определенное время (interval == 0)
+        if interval == 0:
+            return False if last_reminded else True
+
         if not last_reminded:
             return True
 
         last_reminded_dt = safe_fromisoformat(last_reminded, tz_obj=now.tzinfo)
         elapsed_minutes = (now - last_reminded_dt).total_seconds() / 60
-        return elapsed_minutes >= reminder.get("interval_minutes", 60)
+        return elapsed_minutes >= interval
 
 
 class ReminderEvaluator:

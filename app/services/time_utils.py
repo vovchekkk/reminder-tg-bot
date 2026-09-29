@@ -1,4 +1,4 @@
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import re
 from typing import Optional
 
@@ -163,3 +163,78 @@ def format_interval(minutes: int) -> str:
         hours = minutes // 60
         rem_min = minutes % 60
         return f"{hours} ч {rem_min} мин"
+
+
+def parse_date_string(
+    text: str, base_now: datetime
+) -> tuple[Optional[date], Optional[str]]:
+    """
+    Парсит дату из пользовательского ввода и проверяет, что она сегодня или в будущем.
+    Поддерживает:
+      - 'сегодня', 'завтра', 'послезавтра'
+      - Число месяца: '30', '5' (если в текущем месяце прошло, переносит на следующий месяц)
+      - ДД.ММ, ДД/ММ, ДД-ММ (год по умолчанию текущий)
+      - ДД.ММ.ГГГГ, ДД.ММ.ГГ (с явным указанием года)
+      - ГГГГ-ММ-ДД
+
+    Возвращает:
+      (date_obj, None) при успехе
+      (None, "past_date") если дата в прошлом
+      (None, "invalid_date") если дата не существует в календаре (например, 31.02)
+      (None, "invalid_format") если формат не распознан
+    """
+    t = text.strip().lower()
+    base_date = base_now.date()
+
+    if t in ("сегодня", "today"):
+        return base_date, None
+    if t in ("завтра", "tomorrow"):
+        return base_date + timedelta(days=1), None
+    if t in ("послезавтра", "the day after tomorrow"):
+        return base_date + timedelta(days=2), None
+
+    # 1. Формат только число месяца (например: '15' или '5')
+    m_day = re.match(r"^(\d{1,2})$", t)
+    if m_day:
+        d = int(m_day.group(1))
+        if not (1 <= d <= 31):
+            return None, "invalid_date"
+        try:
+            cand = date(base_date.year, base_date.month, d)
+            if cand >= base_date:
+                return cand, None
+            # Если в текущем месяце это число уже прошло, берем следующий месяц
+            next_m = base_date.month + 1 if base_date.month < 12 else 1
+            next_y = base_date.year if base_date.month < 12 else base_date.year + 1
+            return date(next_y, next_m, d), None
+        except ValueError:
+            return None, "invalid_date"
+
+    # 2. Формат ГГГГ-ММ-ДД или ДД.ММ.ГГГГ / ДД.ММ.ГГ / ДД.ММ
+    m_full = re.match(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$", t)
+    if m_full:
+        y, m, d = int(m_full.group(1)), int(m_full.group(2)), int(m_full.group(3))
+    else:
+        m_dm_y = re.match(r"^(\d{1,2})[-/.](\d{1,2})(?:[-/.](\d{2,4}))?$", t)
+        if m_dm_y:
+            d, m = int(m_dm_y.group(1)), int(m_dm_y.group(2))
+            y_str = m_dm_y.group(3)
+            if y_str:
+                y = int(y_str)
+                if y < 100:
+                    y += 2000
+            else:
+                y = base_date.year
+        else:
+            return None, "invalid_format"
+
+    try:
+        cand = date(y, m, d)
+    except ValueError:
+        return None, "invalid_date"
+
+    if cand < base_date:
+        return None, "past_date"
+
+    return cand, None
+

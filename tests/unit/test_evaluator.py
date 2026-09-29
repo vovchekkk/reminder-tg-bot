@@ -151,6 +151,44 @@ class TestOneTimeReminderStrategy:
         }
         assert self.strategy.should_remind(rem, now) is False
 
+    def test_onetime_exact_time_interval_zero(self):
+        # Одноразовое напоминание ровно 1 раз (interval_minutes == 0)
+        start_str = "2026-09-29T14:00:00+00:00"
+        rem = {
+            "start_datetime": start_str,
+            "is_completed": 0,
+            "interval_minutes": 0,
+            "last_reminded_at": None,
+        }
+        # До времени старта - False
+        assert self.strategy.should_remind(rem, datetime(2026, 9, 29, 13, 59, tzinfo=timezone.utc)) is False
+        # В момент старта - True
+        assert self.strategy.should_remind(rem, datetime(2026, 9, 29, 14, 0, tzinfo=timezone.utc)) is True
+        # После отправки напоминания (last_reminded_at заполнено) - повторно НЕ отправляется
+        rem["last_reminded_at"] = start_str
+        assert self.strategy.should_remind(rem, datetime(2026, 9, 29, 14, 30, tzinfo=timezone.utc)) is False
+        assert self.strategy.should_remind(rem, datetime(2026, 9, 29, 15, 0, tzinfo=timezone.utc)) is False
+
+    def test_onetime_repeating_interval(self):
+        # Одноразовое напоминание с повторами (interval_minutes == 30)
+        start_str = "2026-09-29T10:00:00+00:00"
+        rem = {
+            "start_datetime": start_str,
+            "is_completed": 0,
+            "interval_minutes": 30,
+            "last_reminded_at": None,
+        }
+        now = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
+        assert self.strategy.should_remind(rem, now) is True
+
+        # С момента напоминания прошло 15 минут - False
+        rem["last_reminded_at"] = now.isoformat()
+        assert self.strategy.should_remind(rem, now + timedelta(minutes=15)) is False
+
+        # С момента напоминания прошло 30 минут - True
+        assert self.strategy.should_remind(rem, now + timedelta(minutes=30)) is True
+
+
 
 class TestReminderEvaluator:
     def test_evaluator_dispatches_correctly(self):

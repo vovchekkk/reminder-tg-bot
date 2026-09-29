@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from typing import Set
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -317,6 +318,64 @@ def get_onetime_end_time_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="✏️ Ввести другое время",
                     callback_data="onetime_end:custom",
+                )
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
+def get_onetime_date_keyboard(now: datetime) -> InlineKeyboardMarkup:
+    """Выбор даты для одноразового напоминания."""
+    d_today = now.date()
+    d_tomorrow = d_today + timedelta(days=1)
+    d_after = d_today + timedelta(days=2)
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"📅 Сегодня ({d_today.strftime('%d.%m')})",
+                    callback_data=f"setdate:{d_today.isoformat()}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"📅 Завтра ({d_tomorrow.strftime('%d.%m')})",
+                    callback_data=f"setdate:{d_tomorrow.isoformat()}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"📅 Послезавтра ({d_after.strftime('%d.%m')})",
+                    callback_data=f"setdate:{d_after.isoformat()}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Ввести другую дату или год вручную",
+                    callback_data="setdate:custom",
+                )
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],
+        ]
+    )
+
+
+def get_onetime_mode_keyboard() -> InlineKeyboardMarkup:
+    """Выбор режима для одноразового напоминания: 1 раз в точное время или повторяющееся."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔔 1 раз в определенное время",
+                    callback_data="onetime_mode:once",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔁 Повторяющиеся напоминания",
+                    callback_data="onetime_mode:repeating",
                 )
             ],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_wizard")],

@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 import html
 import re
 from typing import Optional
@@ -16,7 +16,9 @@ from app.keyboards import (
     get_end_time_keyboard,
     get_exact_time_keyboard,
     get_interval_keyboard,
+    get_onetime_date_keyboard,
     get_onetime_end_time_keyboard,
+    get_onetime_mode_keyboard,
     get_onetime_quick_keyboard,
     get_recurring_mode_keyboard,
     get_start_time_keyboard,
@@ -28,6 +30,7 @@ from app.services.time_utils import (
     format_days_list,
     format_interval,
     get_now_for_user,
+    parse_date_string,
     parse_time_or_delay,
     safe_fromisoformat,
 )
@@ -426,103 +429,405 @@ async def process_custom_end_time_text(message: Message, state: FSMContext):
 @router.callback_query(
     CreateReminderFSM.choosing_type, F.data == "type:one_time"
 )
-async def choose_onetime_type(callback: CallbackQuery, state: FSMContext):
-    """Выбор одноразового напоминания."""
+async def choose_onetime_type(
+    callback: CallbackQuery,
+    state: FSMContext,
+    user_repo: Optional[IUserRepository] = None,
+):
+    """Выбор одноразового напоминания: переход к выбору даты."""
+    u_repo = user_repo or db.users
+    now = get_now_for_user(callback.from_user.id, u_repo)
+
     await state.update_data(reminder_type="one_time")
-    await state.set_state(CreateReminderFSM.waiting_for_onetime_dt)
+    await state.set_state(CreateReminderFSM.waiting_for_onetime_date)
     await callback.message.edit_text(
-        "⏱️ <b>Когда отправить первое напоминание?</b>\n\n"
-        "Выберите быстрый вариант или напишите текстом\n"
-        "(например: <code>18:30</code>, <code>+45m</code>, <code>+2h</code> или <code>30.09 14:00</code>):",
-        reply_markup=get_onetime_quick_keyboard(),
+        "📅 <b>Шаг 3: Выберите дату напоминания:</b>\n\n"
+        "Выберите дату кнопкой или напишите вручную сообщением.\n\n"
+        "<i>Поддерживаемые форматы ввода:\n"
+        "• Число месяца: <code>30</code>\n"
+        "• День и месяц: <code>30.09</code>\n"
+        "• С указанием года: <code>15.10.2026</code> или <code>01.01.2027</code>\n"
+        "• Словами: <code>сегодня</code>, <code>завтра</code></i>",
+        reply_markup=get_onetime_date_keyboard(now),
         parse_mode=ParseMode.HTML,
     )
     await callback.answer()
 
 
 @router.callback_query(
-    CreateReminderFSM.waiting_for_onetime_dt, F.data.startswith("quicktime:")
+    CreateReminderFSM.waiting_for_onetime_date, F.data.startswith("setdate:")
 )
-async def process_quick_onetime(
+async def process_onetime_date_callback(
     callback: CallbackQuery,
     state: FSMContext,
     user_repo: Optional[IUserRepository] = None,
 ):
-    """Быстрый выбор времени для одноразового напоминания."""
+    """Выбор даты для одноразового напоминания по инлайн-кнопке."""
     val = callback.data.split(":", 1)[1]
-    u_repo = user_repo or db.users
-    now = get_now_for_user(callback.from_user.id, u_repo)
-
-    if val == "manual":
+    if val == "custom":
         await callback.message.edit_text(
-            "✏️ Напишите дату и время для напоминания:\n\n"
+            "✏️ <b>Введите дату напоминания сообщением:</b>\n\n"
             "Примеры:\n"
-            "• <code>18:30</code> (сегодня/завтра)\n"
-            "• <code>+30m</code> (через 30 минут)\n"
-            "• <code>+2h</code> (через 2 часа)\n"
-            "• <code>30.09 15:00</code>",
+            "• Число месяца: <code>30</code>\n"
+            "• Дата: <code>30.09</code>\n"
+            "• С указанием года: <code>15.10.2026</code> или <code>01.01.2027</code>\n"
+            "• Словами: <code>сегодня</code>, <code>завтра</code>, <code>послезавтра</code>",
+            reply_markup=get_wizard_cancel_keyboard(),
             parse_mode=ParseMode.HTML,
         )
         await callback.answer()
         return
 
-    target_dt: Optional[datetime] = None
-    if val == "+10m":
-        target_dt = now + timedelta(minutes=10)
-    elif val == "+30m":
-        target_dt = now + timedelta(minutes=30)
-    elif val == "+1h":
-        target_dt = now + timedelta(hours=1)
-    elif val == "+2h":
-        target_dt = now + timedelta(hours=2)
-    elif val == "18:00":
-        target_dt = now.replace(
-            hour=18, minute=0, second=0, microsecond=0
-        )
-        if target_dt <= now:
-            target_dt += timedelta(days=1)
-    elif val == "tomorrow_09":
-        target_dt = (now + timedelta(days=1)).replace(
-            hour=9, minute=0, second=0, microsecond=0
-        )
+    u_repo = user_repo or db.users
+    now = get_now_for_user(callback.from_user.id, u_repo)
 
-    if target_dt:
-        await state.update_data(start_datetime=target_dt.isoformat())
-        await state.set_state(CreateReminderFSM.waiting_for_onetime_end_time)
-        await callback.message.edit_text(
-            f"🕐 Первое напоминание: <b>{target_dt.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
-            f"🛑 <b>До скольки напоминать (если вы не нажмёте ✅)?</b>\n"
-            f"<i>(После этого времени бот перестанет присылать повторные сообщения)</i>",
-            reply_markup=get_onetime_end_time_keyboard(),
-            parse_mode=ParseMode.HTML,
-        )
+    try:
+        target_date = date.fromisoformat(val)
+    except ValueError:
+        await callback.answer("Некорректная дата.", show_alert=True)
+        return
+
+    if target_date < now.date():
+        await callback.answer("⚠️ Дата не может быть в прошлом!", show_alert=True)
+        return
+
+    await state.update_data(onetime_date=target_date.isoformat())
+    await state.set_state(CreateReminderFSM.choosing_onetime_mode)
+    await callback.message.edit_text(
+        f"📅 Выбранная дата: <b>{target_date.strftime('%d.%m.%Y')}</b>\n\n"
+        f"⚙️ <b>Как напомнить в этот день?</b>\n\n"
+        f"• 🔔 <b>1 раз в определенное время</b> — пришлёт ровно одно напоминание в назначенный час.\n"
+        f"• 🔁 <b>Повторяющиеся напоминания</b> — будет напоминать каждые X минут в заданном диапазоне времени, пока вы не нажмёте «✅ Сделано!» (или до конца дня).",
+        reply_markup=get_onetime_mode_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
     await callback.answer()
 
 
-@router.message(CreateReminderFSM.waiting_for_onetime_dt)
-async def process_manual_onetime_dt(
+@router.message(CreateReminderFSM.waiting_for_onetime_date)
+async def process_onetime_date_text(
     message: Message,
     state: FSMContext,
     user_repo: Optional[IUserRepository] = None,
 ):
-    """Ручной ввод даты и времени для одноразового напоминания."""
+    """Ручной ввод даты для одноразового напоминания."""
+    text = message.text.strip()
     u_repo = user_repo or db.users
     now = get_now_for_user(message.from_user.id, u_repo)
-    parsed_dt = parse_time_or_delay(message.text, now)
-    if not parsed_dt:
+
+    target_date, err = parse_date_string(text, now)
+    if err == "past_date":
         await message.answer(
-            "⚠️ Не удалось распознать время. Попробуйте еще раз:\n"
-            "Примеры: <code>18:30</code>, <code>+45m</code>, <code>+2h</code>, <code>30.09 15:00</code>",
+            f"⚠️ <b>Дата не может быть в прошлом!</b>\n\n"
+            f"Укажите сегодняшнюю дату ({now.strftime('%d.%m')}) или дату в будущем.\n"
+            f"<i>Например: <code>{now.strftime('%d.%m')}</code>, <code>30.09</code> или <code>15.10.2026</code></i>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    elif err == "invalid_date":
+        await message.answer(
+            "⚠️ <b>Некорректная дата!</b> Такого дня нет в календаре.\n"
+            "Попробуйте еще раз (например, <code>30.09</code> или <code>15.10.2026</code>):",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    elif err == "invalid_format" or target_date is None:
+        await message.answer(
+            "⚠️ <b>Не удалось распознать дату.</b>\n\n"
+            "Пожалуйста, введите дату в формате <b>ДД.ММ</b> или <b>ДД.ММ.ГГГГ</b> (например: <code>30.09</code> или <code>15.10.2026</code>):",
             parse_mode=ParseMode.HTML,
         )
         return
 
+    await state.update_data(onetime_date=target_date.isoformat())
+    await state.set_state(CreateReminderFSM.choosing_onetime_mode)
     await cleanup_previous_wizard_message(message, state)
 
     sent = await message.answer(
-        f"🕐 Первое напоминание: <b>{parsed_dt.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
-        f"🛑 <b>До скольки напоминать (если вы не нажмёте ✅)?</b>\n"
+        f"📅 Выбранная дата: <b>{target_date.strftime('%d.%m.%Y')}</b>\n\n"
+        f"⚙️ <b>Как напомнить в этот день?</b>\n\n"
+        f"• 🔔 <b>1 раз в определенное время</b> — пришлёт ровно одно напоминание в назначенный час.\n"
+        f"• 🔁 <b>Повторяющиеся напоминания</b> — будет напоминать каждые X минут в заданном диапазоне времени, пока вы не нажмёте «✅ Сделано!» (или до конца дня).",
+        reply_markup=get_onetime_mode_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    await state.update_data(wizard_msg_id=sent.message_id)
+
+
+@router.callback_query(
+    CreateReminderFSM.choosing_onetime_mode, F.data == "onetime_mode:once"
+)
+async def process_onetime_mode_once(callback: CallbackQuery, state: FSMContext):
+    """Выбор режима: 1 раз в точное время."""
+    data = await state.get_data()
+    target_date = date.fromisoformat(data["onetime_date"])
+    await state.set_state(CreateReminderFSM.waiting_for_onetime_exact_time)
+    await callback.message.edit_text(
+        f"📅 Дата: <b>{target_date.strftime('%d.%m.%Y')}</b>\n\n"
+        f"🕐 <b>Во сколько отправить напоминание?</b>\n\n"
+        f"Выберите время кнопкой или напишите своё в формате <b>ЧЧ:ММ</b> (например, <code>14:30</code>):",
+        reply_markup=get_exact_time_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+
+@router.callback_query(
+    CreateReminderFSM.choosing_onetime_mode, F.data == "onetime_mode:repeating"
+)
+async def process_onetime_mode_repeating(callback: CallbackQuery, state: FSMContext):
+    """Выбор режима: повторяющиеся напоминания в течение дня."""
+    data = await state.get_data()
+    target_date = date.fromisoformat(data["onetime_date"])
+    await state.set_state(CreateReminderFSM.waiting_for_onetime_start_time)
+    await callback.message.edit_text(
+        f"📅 Дата: <b>{target_date.strftime('%d.%m.%Y')}</b>\n\n"
+        f"🕐 <b>С какого времени начинать напоминать?</b>\n"
+        f"<i>(Например, если выбрать «С 09:00», бот в этот день начнёт присылать напоминания с 9 утра по вашему поясу и повторять их, пока вы не нажмёте ✅)</i>",
+        reply_markup=get_start_time_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+
+@router.callback_query(
+    CreateReminderFSM.waiting_for_onetime_exact_time, F.data.startswith("exacttime:")
+)
+async def process_onetime_exact_time_choice(
+    callback: CallbackQuery,
+    state: FSMContext,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
+    """Выбор готового точного времени для одноразового напоминания."""
+    val = callback.data.split(":", 1)[1]
+    if val == "custom":
+        await callback.message.edit_text(
+            "✏️ Напишите точное время напоминания в формате <b>ЧЧ:ММ</b> (например, <code>14:30</code>):",
+            reply_markup=get_wizard_cancel_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        await callback.answer()
+        return
+
+    u_repo = user_repo or db.users
+    now = get_now_for_user(callback.from_user.id, u_repo)
+    data = await state.get_data()
+    target_date = date.fromisoformat(data["onetime_date"])
+
+    sh, sm = map(int, val.split(":"))
+    chosen_time = time(sh, sm)
+
+    if target_date == now.date() and chosen_time <= now.time():
+        await callback.answer(
+            f"⚠️ Время {val} на сегодня уже прошло! Сейчас {now.strftime('%H:%M')}.",
+            show_alert=True,
+        )
+        return
+
+    start_dt = datetime.combine(target_date, chosen_time).replace(tzinfo=now.tzinfo)
+    await state.update_data(
+        start_datetime=start_dt.isoformat(),
+        start_time=val,
+        end_time=val,
+    )
+    await finalize_reminder_creation(
+        callback.message,
+        state,
+        interval_minutes=0,
+        is_callback=True,
+        reminder_repo=reminder_repo,
+        user_repo=user_repo,
+    )
+    await callback.answer()
+
+
+@router.message(CreateReminderFSM.waiting_for_onetime_exact_time)
+async def process_onetime_custom_exact_time_text(
+    message: Message,
+    state: FSMContext,
+    reminder_repo: Optional[IReminderRepository] = None,
+    user_repo: Optional[IUserRepository] = None,
+):
+    """Ручной ввод точного времени для одноразового напоминания."""
+    text = message.text.strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})$", text)
+    if not m:
+        await message.answer(
+            "Некорректный формат! Введите время в виде <b>ЧЧ:ММ</b> (например, <code>14:30</code>):",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    h, m_val = int(m.group(1)), int(m.group(2))
+    if not (0 <= h <= 23 and 0 <= m_val <= 59):
+        await message.answer(
+            "Неверные часы или минуты. Введите время от 00:00 до 23:59."
+        )
+        return
+
+    u_repo = user_repo or db.users
+    now = get_now_for_user(message.from_user.id, u_repo)
+    data = await state.get_data()
+    target_date = date.fromisoformat(data["onetime_date"])
+    chosen_time = time(h, m_val)
+
+    if target_date == now.date() and chosen_time <= now.time():
+        await message.answer(
+            f"⚠️ Время <b>{h:02d}:{m_val:02d}</b> на сегодня уже прошло! "
+            f"Сейчас <b>{now.strftime('%H:%M')}</b>. Пожалуйста, введите время в будущем:",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    exact_time_str = f"{h:02d}:{m_val:02d}"
+    start_dt = datetime.combine(target_date, chosen_time).replace(tzinfo=now.tzinfo)
+    await state.update_data(
+        start_datetime=start_dt.isoformat(),
+        start_time=exact_time_str,
+        end_time=exact_time_str,
+    )
+    await cleanup_previous_wizard_message(message, state)
+    await finalize_reminder_creation(
+        message,
+        state,
+        interval_minutes=0,
+        is_callback=False,
+        reminder_repo=reminder_repo,
+        user_repo=user_repo,
+    )
+
+
+@router.callback_query(
+    CreateReminderFSM.waiting_for_onetime_start_time, F.data.startswith("starttime:")
+)
+async def process_onetime_start_time_choice(
+    callback: CallbackQuery,
+    state: FSMContext,
+    user_repo: Optional[IUserRepository] = None,
+):
+    """Выбор готового времени начала для повторяющегося одноразового напоминания."""
+    val = callback.data.split(":", 1)[1]
+    if val == "custom":
+        await callback.message.edit_text(
+            "✏️ Напишите время начала в формате <b>ЧЧ:ММ</b> (например, <code>09:30</code> или <code>14:00</code>):",
+            reply_markup=get_wizard_cancel_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        await callback.answer()
+        return
+
+    start_time_str = "00:00" if val in ("00:00", "day_start") else val
+    sh, sm = map(int, start_time_str.split(":"))
+
+    u_repo = user_repo or db.users
+    now = get_now_for_user(callback.from_user.id, u_repo)
+    data = await state.get_data()
+    target_date = date.fromisoformat(data["onetime_date"])
+
+    start_dt = datetime.combine(target_date, time(sh, sm)).replace(tzinfo=now.tzinfo)
+    await state.update_data(
+        start_datetime=start_dt.isoformat(),
+        start_time=start_time_str,
+    )
+    await state.set_state(CreateReminderFSM.waiting_for_onetime_end_time)
+    await callback.message.edit_text(
+        f"📅 Дата: <b>{target_date.strftime('%d.%m.%Y')}</b>\n"
+        f"🕐 Начало: <b>с {start_time_str}</b>\n\n"
+        f"🛑 <b>До скольки напоминать?</b>\n"
         f"<i>(После этого времени бот перестанет присылать повторные сообщения)</i>",
+        reply_markup=get_onetime_end_time_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+
+@router.message(CreateReminderFSM.waiting_for_onetime_start_time)
+async def process_onetime_custom_start_time_text(
+    message: Message,
+    state: FSMContext,
+    user_repo: Optional[IUserRepository] = None,
+):
+    """Ручной ввод времени начала для повторяющегося одноразового напоминания."""
+    text = message.text.strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})$", text)
+    if not m:
+        await message.answer(
+            "Некорректный формат! Введите время в виде <b>ЧЧ:ММ</b> (например, <code>09:15</code>):",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    h, m_val = int(m.group(1)), int(m.group(2))
+    if not (0 <= h <= 23 and 0 <= m_val <= 59):
+        await message.answer(
+            "Неверные часы или минуты. Введите время от 00:00 до 23:59."
+        )
+        return
+
+    start_time_str = f"{h:02d}:{m_val:02d}"
+    u_repo = user_repo or db.users
+    now = get_now_for_user(message.from_user.id, u_repo)
+    data = await state.get_data()
+    target_date = date.fromisoformat(data["onetime_date"])
+
+    start_dt = datetime.combine(target_date, time(h, m_val)).replace(tzinfo=now.tzinfo)
+    await state.update_data(
+        start_datetime=start_dt.isoformat(),
+        start_time=start_time_str,
+    )
+    await state.set_state(CreateReminderFSM.waiting_for_onetime_end_time)
+    await cleanup_previous_wizard_message(message, state)
+
+    sent = await message.answer(
+        f"📅 Дата: <b>{target_date.strftime('%d.%m.%Y')}</b>\n"
+        f"🕐 Начало: <b>с {start_time_str}</b>\n\n"
+        f"🛑 <b>До скольки напоминать?</b>\n"
+        f"<i>(После этого времени бот перестанет присылать повторные сообщения)</i>",
+        reply_markup=get_onetime_end_time_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    await state.update_data(wizard_msg_id=sent.message_id)
+
+
+# --- СОВМЕСТИМОСТЬ СО СТАРЫМИ СОСТОЯНИЯМИ ОДНОРАЗОВЫХ НАПОМИНАНИЙ ---
+
+
+@router.callback_query(
+    CreateReminderFSM.waiting_for_onetime_dt, F.data.startswith("quicktime:")
+)
+async def process_quick_onetime_legacy(
+    callback: CallbackQuery,
+    state: FSMContext,
+    user_repo: Optional[IUserRepository] = None,
+):
+    """Fallback обработчик для quicktime при миграции."""
+    u_repo = user_repo or db.users
+    now = get_now_for_user(callback.from_user.id, u_repo)
+    target_dt = now + timedelta(minutes=10)
+    await state.update_data(start_datetime=target_dt.isoformat())
+    await state.set_state(CreateReminderFSM.waiting_for_onetime_end_time)
+    await callback.message.edit_text(
+        f"🕐 Напоминание: <b>{target_dt.strftime('%d.%m.%Y %H:%M')}</b>",
+        reply_markup=get_onetime_end_time_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+
+@router.message(CreateReminderFSM.waiting_for_onetime_dt)
+async def process_manual_onetime_dt_legacy(
+    message: Message,
+    state: FSMContext,
+    user_repo: Optional[IUserRepository] = None,
+):
+    """Fallback ввод для устаревшего waiting_for_onetime_dt."""
+    u_repo = user_repo or db.users
+    now = get_now_for_user(message.from_user.id, u_repo)
+    parsed_dt = parse_time_or_delay(message.text, now) or (now + timedelta(minutes=10))
+    await cleanup_previous_wizard_message(message, state)
+    sent = await message.answer(
+        f"🕐 Напоминание: <b>{parsed_dt.strftime('%d.%m.%Y %H:%M')}</b>",
         reply_markup=get_onetime_end_time_keyboard(),
         parse_mode=ParseMode.HTML,
     )
@@ -740,14 +1045,23 @@ async def finalize_reminder_creation(
             )
     else:
         dt_obj = safe_fromisoformat(start_datetime, tz_obj=user_now.tzinfo)
-        summary += f"🕐 <b>Первое напоминание:</b> {dt_obj.strftime('%d.%m.%Y %H:%M')}\n"
-        if end_time:
-            summary += f"🛑 <b>Напоминать до:</b> {end_time}\n"
-        summary += (
-            f"⏰ <b>Частота повтора:</b> каждые {format_interval(interval_minutes)} "
-            f"(пока не нажмёте ✅)\n\n"
-            f"Когда придёт напоминание, нажмите под ним <b>«✅ Сделано!»</b>, чтобы отключить повторы."
-        )
+        if interval_minutes == 0:
+            summary += (
+                f"📅 <b>Дата:</b> {dt_obj.strftime('%d.%m.%Y')}\n"
+                f"🕐 <b>Время напоминания:</b> в {dt_obj.strftime('%H:%M')}\n"
+                f"⏰ <b>Режим:</b> 1 раз в определенное время\n\n"
+                f"Бот пришлёт сообщение в назначенное время."
+            )
+        else:
+            start_s = dt_obj.strftime("%H:%M")
+            end_s = f"до {end_time}" if end_time else "до конца дня"
+            summary += (
+                f"📅 <b>Дата:</b> {dt_obj.strftime('%d.%m.%Y')}\n"
+                f"🕐 <b>Время показа:</b> с {start_s} {end_s}\n"
+                f"⏰ <b>Частота повтора:</b> каждые {format_interval(interval_minutes)} "
+                f"(пока не нажмёте ✅)\n\n"
+                f"Когда придёт напоминание, нажмите под ним <b>«✅ Сделано!»</b>, чтобы отключить повторы."
+            )
 
 
     kb = InlineKeyboardMarkup(
