@@ -25,7 +25,6 @@ import asyncio
 from contextlib import contextmanager
 from datetime import datetime, timedelta, time, timezone
 import html
-import json
 import logging
 import os
 import re
@@ -33,7 +32,6 @@ import sqlite3
 import sys
 import threading
 from typing import Dict, List, Optional, Set, Tuple
-import urllib.request
 
 # Настройка UTF-8 для консоли Windows
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -113,36 +111,6 @@ def get_user_tz_obj(tz_str: str):
         return zoneinfo.ZoneInfo("Europe/Moscow")
     except Exception:
         return timezone(timedelta(hours=3))
-
-
-async def detect_timezone_from_coords(lat: float, lon: float) -> Tuple[str, str]:
-    """Автоматически определяет часовой пояс по координатам.
-    Возвращает (имя_пояса, читаемое_описание).
-    """
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&timezone=auto"
-    try:
-        def fetch():
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "TelegramReminderBot/1.0"}
-            )
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                return json.loads(resp.read().decode())
-
-        data = await asyncio.to_thread(fetch)
-        tz_name = data.get("timezone")
-        if tz_name:
-            offset_sec = data.get("utc_offset_seconds", 0)
-            offset_hours = offset_sec // 3600
-            sign = "+" if offset_hours >= 0 else ""
-            return tz_name, f"{tz_name} (UTC{sign}{offset_hours})"
-    except Exception as e:
-        logger.warning(f"Запрос к open-meteo не удался: {e}")
-
-    # Резервный расчет по долготе: каждые 15 градусов = 1 час
-    approx_offset = round(lon / 15)
-    sign = "+" if approx_offset >= 0 else ""
-    tz_str = f"UTC{sign}{approx_offset}"
-    return tz_str, f"{tz_str} (приблизительно по координатам)"
 
 
 def safe_fromisoformat(val: str, tz_obj=None) -> datetime:
@@ -503,22 +471,6 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def get_location_keyboard() -> ReplyKeyboardMarkup:
-    """Клавиатура для запроса геопозиции."""
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(
-                    text="📍 Отправить геопозицию (автоматически)",
-                    request_location=True,
-                )
-            ],
-            [KeyboardButton(text="🔙 Назад в меню")],
-        ],
-        resize_keyboard=True,
-    )
-
-
 def get_timezone_inline_keyboard() -> InlineKeyboardMarkup:
     """Инлайн-кнопки с популярными часовыми поясами."""
     buttons = []
@@ -776,16 +728,17 @@ async def cmd_start(message: Message, state: FSMContext):
 
     text = (
         f"👋 <b>Привет! Я бот-напоминалка с контролем выполнения!</b>\n\n"
-        f"💡 <b>Как это работает:</b>\n"
-        f"1. В назначенное время бот присылает сообщение с кнопкой <b>«✅ Сделано!»</b>.\n"
-        f"2. Если вы нажимаете галочку — бот вас похвалит (<i>«Ура, вы молодец!»</i>) и перестанет напоминать.\n"
-        f"3. <b>Если не нажали галочку</b> — бот будет повторять напоминание через заданный интервал (например, каждый час)!\n\n"
-        f"🌍 <b>Ваш часовой пояс:</b> <code>{user_tz}</code>\n"
-        f"🕒 <i>Текущее местное время: {now_str}</i>\n"
-        f"<i>(Чтобы сменить пояс или определить его по геолокации — нажмите «⚙️ Часовой пояс»)</i>"
+        f"Чтобы напоминания приходили строго вовремя, пожалуйста, <b>выберите ваш часовой пояс</b> из списка ниже:\n\n"
+        f"<i>(Сейчас установлен: <code>{user_tz}</code>, местное время: {now_str})</i>"
     )
     await message.answer(
-        text, reply_markup=get_main_keyboard(), parse_mode=ParseMode.HTML
+        text,
+        reply_markup=get_timezone_inline_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    await message.answer(
+        "Главное меню:",
+        reply_markup=get_main_keyboard(),
     )
 
 
@@ -800,9 +753,8 @@ async def cmd_help(message: Message):
         "   - Своя частота повторов (если не нажали ✅)\n"
         "   - Время старта\n\n"
         "• <b>⚙️ Часовой пояс</b> — настройка местного времени:\n"
-        "   - Автоматически по геопозиции (кнопка в 1 клик)\n"
         "   - Выбор из списка городов\n"
-        "   - Ввод любого UTC смещения\n\n"
+        "   - Ввод любого UTC смещения вручную\n\n"
         "• <b>📋 Мои напоминания</b> — список всех задач:\n"
         "   - Тестовая отправка прямо сейчас (кнопка «🔔 Проверить сейчас»)\n"
         "   - Пауза / возобновление\n"
@@ -815,7 +767,7 @@ async def cmd_help(message: Message):
 
 
 # ---------------------------------------------------------
-# НАСТРОЙКА ЧАСОВОГО ПОЯСА (АВТО И ВРУЧНУЮ)
+# НАСТРОЙКА ЧАСОВОГО ПОЯСА
 # ---------------------------------------------------------
 @router.message(Command("timezone"))
 @router.message(F.text == "⚙️ Часовой пояс")
@@ -829,50 +781,12 @@ async def show_timezone_settings(message: Message, state: FSMContext):
         f"⚙️ <b>Настройка часового пояса</b>\n\n"
         f"🌍 Текущий пояс: <code>{user_tz}</code>\n"
         f"🕒 Ваше время сейчас: <b>{now_str}</b>\n\n"
-        f"<b>Как настроить:</b>\n"
-        f"1. <b>Автоматически:</b> нажмите кнопку внизу <b>«📍 Отправить геопозицию»</b> (на телефоне бот мгновенно вычислит ваш город и точный пояс).\n"
-        f"2. <b>Или выберите свой регион из списка ниже:</b>"
+        f"Выберите ваш регион из списка ниже или введите смещение вручную:"
     )
-
-    # Показываем инлайн-список регионов и одновременно переключаем нижнюю клавиатуру на геопозицию
     await message.answer(
         prompt,
-        reply_markup=get_location_keyboard(),
-        parse_mode=ParseMode.HTML,
-    )
-    await message.answer(
-        "Выберите ваш город или смещение:",
         reply_markup=get_timezone_inline_keyboard(),
-    )
-
-
-@router.message(F.location)
-async def process_user_location(message: Message, state: FSMContext):
-    """Автоматическое определение часового пояса при отправке геолокации."""
-    await state.clear()
-    lat = message.location.latitude
-    lon = message.location.longitude
-
-    wait_msg = await message.answer("⏳ Определяю ваш часовой пояс по координатам...")
-    tz_name, display_name = await detect_timezone_from_coords(lat, lon)
-
-    db.set_user_timezone(message.from_user.id, tz_name)
-    user_now = get_now_for_user(message.from_user.id)
-    now_str = user_now.strftime("%d.%m.%Y %H:%M")
-
-    try:
-        await wait_msg.delete()
-    except Exception:
-        pass
-
-    text = (
-        f"🎉 <b>Часовой пояс успешно определён автоматически!</b>\n\n"
-        f"📍 <b>Пояс:</b> <code>{display_name}</code>\n"
-        f"🕒 <b>Ваше местное время:</b> <b>{now_str}</b>\n\n"
-        f"Теперь все ваши напоминания будут приходить строго по вашему времени."
-    )
-    await message.answer(
-        text, reply_markup=get_main_keyboard(), parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -901,7 +815,9 @@ async def process_timezone_button(callback: CallbackQuery, state: FSMContext):
     await callback.answer("✅ Часовой пояс сохранён!", show_alert=True)
     await callback.message.edit_text(
         f"✅ <b>Часовой пояс установлен:</b> <code>{val}</code>\n"
-        f"🕒 Ваше местное время: <b>{now_str}</b>",
+        f"🕒 Ваше местное время: <b>{now_str}</b>\n\n"
+        f"🎉 Теперь все напоминания будут приходить строго по вашему времени!\n"
+        f"Нажмите <b>«➕ Создать напоминание»</b>, чтобы запланировать первую задачу.",
         parse_mode=ParseMode.HTML,
     )
     await callback.message.answer(
