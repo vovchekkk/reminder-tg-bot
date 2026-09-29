@@ -23,6 +23,23 @@ DB_PATH: str = os.getenv("DB_PATH", "reminders.db")
 PORT: str = os.getenv("PORT", "")
 CHECK_INTERVAL_SECONDS: int = int(os.getenv("CHECK_INTERVAL_SECONDS", "20"))
 
+# Supabase / PostgreSQL конфигурация
+DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
+SUPABASE_URL: str = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "").strip()
+SUPABASE_DB_PASSWORD: str = os.getenv("SUPABASE_DB_PASSWORD", os.getenv("DB_PASSWORD", "")).strip()
+
+if not DATABASE_URL and SUPABASE_URL and SUPABASE_DB_PASSWORD:
+    import re
+    match = re.search(r"https://([a-z0-9]+)\.supabase\.co", SUPABASE_URL)
+    if match:
+        ref = match.group(1)
+        pooler_host = os.getenv("SUPABASE_POOLER_HOST", "aws-1-eu-west-1.pooler.supabase.com")
+        DATABASE_URL = (
+            f"postgresql://postgres.{ref}:{SUPABASE_DB_PASSWORD}@{pooler_host}:5432/postgres?sslmode=require"
+        )
+
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,

@@ -1,7 +1,14 @@
 from typing import Any, Dict, List, Optional
 
-from app.config import DB_PATH
+from app.config import DATABASE_URL, DB_PATH, logger
 from app.database.connection import DatabaseConnectionManager
+from app.database.postgres import (
+    PostgresConnectionManager,
+    PostgresReminderRepository,
+    PostgresSystemSettingsRepository,
+    PostgresUserRepository,
+    migrate_from_sqlite_if_needed,
+)
 from app.database.repositories import (
     SqliteReminderRepository,
     SqliteSystemSettingsRepository,
@@ -18,13 +25,25 @@ class Database:
     """
     Фасад базы данных для сохранения обратной совместимости.
     Объединяет специализированные репозитории: users, reminders, system.
+    Автоматически переключается на PostgreSQL при наличии DATABASE_URL (Supabase/Render).
     """
 
-    def __init__(self, db_path: str = DB_PATH):
-        self.connection = DatabaseConnectionManager(db_path)
-        self.users: IUserRepository = SqliteUserRepository(self.connection)
-        self.reminders: IReminderRepository = SqliteReminderRepository(self.connection)
-        self.system: ISystemSettingsRepository = SqliteSystemSettingsRepository(self.connection)
+    def __init__(self, db_path: str = DB_PATH, database_url: Optional[str] = None):
+        target_url = database_url if database_url is not None else DATABASE_URL
+        if target_url:
+            logger.info("Initializing PostgreSQL database (Supabase / Render)...")
+            self.connection = PostgresConnectionManager(target_url)
+            self.users: IUserRepository = PostgresUserRepository(self.connection)
+            self.reminders: IReminderRepository = PostgresReminderRepository(self.connection)
+            self.system: ISystemSettingsRepository = PostgresSystemSettingsRepository(self.connection)
+            migrate_from_sqlite_if_needed(db_path, self.connection)
+        else:
+            logger.info(f"Initializing SQLite database: {db_path}")
+            self.connection = DatabaseConnectionManager(db_path)
+            self.users = SqliteUserRepository(self.connection)
+            self.reminders = SqliteReminderRepository(self.connection)
+            self.system = SqliteSystemSettingsRepository(self.connection)
+
 
     # Делегирование для обратной совместимости
     def get_system_setting(self, key: str) -> Optional[str]:

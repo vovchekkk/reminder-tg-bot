@@ -2,3 +2,8 @@
 *.db
 __pycache__/
 *.pyc
+.agents/
+.pytest_cache/
+skills-lock.json
+
+
