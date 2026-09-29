@@ -8,12 +8,13 @@ import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from app.database.connection import DatabaseConnectionManager
-from app.database.repositories import (
+from app.database.sqlite import (
+    SqliteConnectionManager,
     SqliteReminderRepository,
     SqliteSystemSettingsRepository,
     SqliteUserRepository,
 )
+
 from app.domain.interfaces import INotifier
 from app.handlers import setup_handlers
 from app.services.evaluator import ReminderEvaluator
@@ -24,7 +25,7 @@ def temp_db():
     """Создаёт чистую временную SQLite базу данных для каждого теста."""
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
-    conn_mgr = DatabaseConnectionManager(db_path=path)
+    conn_mgr = SqliteConnectionManager(db_path=path)
     user_repo = SqliteUserRepository(conn_mgr)
     reminder_repo = SqliteReminderRepository(conn_mgr)
     system_repo = SqliteSystemSettingsRepository(conn_mgr)

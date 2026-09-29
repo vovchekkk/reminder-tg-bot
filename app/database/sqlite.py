@@ -1,8 +1,10 @@
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+import sqlite3
+import threading
+from typing import Any, Dict, Generator, List, Optional
 
-from app.config import DEFAULT_TIMEZONE
-from app.database.connection import DatabaseConnectionManager
+from app.config import DB_PATH, DEFAULT_TIMEZONE, logger
 from app.domain.interfaces import (
     IReminderRepository,
     ISystemSettingsRepository,
@@ -10,10 +12,88 @@ from app.domain.interfaces import (
 )
 
 
-class SqliteUserRepository(IUserRepository):
-    """Репозиторий для управления пользователями и их настройками часового пояса."""
+class SqliteConnectionManager:
+    """Менеджер подключений к SQLite и инициализация локальной схемы."""
 
-    def __init__(self, connection_manager: DatabaseConnectionManager):
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self.init_db()
+
+    @contextmanager
+    def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    @property
+    def lock(self) -> threading.Lock:
+        return self._lock
+
+    def init_db(self) -> None:
+        with self._lock, self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Таблица напоминаний
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    reminder_type TEXT NOT NULL,      -- 'recurring' или 'one_time'
+                    days_of_week TEXT,                -- '0,4' (0=Пн, 4=Пт)
+                    interval_minutes INTEGER NOT NULL DEFAULT 60,
+                    start_time TEXT,                  -- '09:00'
+                    end_time TEXT,                    -- '22:00'
+                    start_datetime TEXT,              -- для one_time: ISO формат
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    last_reminded_at TEXT,            -- ISO формат времени последнего сообщения
+                    last_completed_date TEXT,         -- 'YYYY-MM-DD' дата выполнения
+                    is_completed INTEGER NOT NULL DEFAULT 0, -- 1 если выполнено
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            # Миграция для существующей базы (добавление end_time)
+            try:
+                cursor.execute("ALTER TABLE reminders ADD COLUMN end_time TEXT")
+            except sqlite3.OperationalError:
+                pass
+
+            # Таблица пользователей (часовые пояса)
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    timezone TEXT NOT NULL DEFAULT 'Europe/Moscow',
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
+            # Таблица системных настроек (версия деплоя и т.д.)
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+                """
+            )
+            conn.commit()
+
+
+# Алиас для обратной совместимости
+DatabaseConnectionManager = SqliteConnectionManager
+
+
+class SqliteUserRepository(IUserRepository):
+    """SQLite реализация репозитория пользователей."""
+
+    def __init__(self, connection_manager: SqliteConnectionManager):
         self._cm = connection_manager
 
     def get_user_timezone(self, user_id: int) -> str:
@@ -58,9 +138,9 @@ class SqliteUserRepository(IUserRepository):
 
 
 class SqliteReminderRepository(IReminderRepository):
-    """Репозиторий для управления напоминаниями."""
+    """SQLite реализация репозитория напоминаний."""
 
-    def __init__(self, connection_manager: DatabaseConnectionManager):
+    def __init__(self, connection_manager: SqliteConnectionManager):
         self._cm = connection_manager
 
     def add_reminder(
@@ -188,9 +268,9 @@ class SqliteReminderRepository(IReminderRepository):
 
 
 class SqliteSystemSettingsRepository(ISystemSettingsRepository):
-    """Репозиторий системных настроек."""
+    """SQLite реализация репозитория системных настроек."""
 
-    def __init__(self, connection_manager: DatabaseConnectionManager):
+    def __init__(self, connection_manager: SqliteConnectionManager):
         self._cm = connection_manager
 
     def get_setting(self, key: str) -> Optional[str]:

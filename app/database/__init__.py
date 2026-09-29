@@ -1,4 +1,3 @@
-from app.database.connection import DatabaseConnectionManager
 from app.database.database import Database, db
 from app.database.postgres import (
     PostgresConnectionManager,
@@ -7,7 +6,9 @@ from app.database.postgres import (
     PostgresUserRepository,
     migrate_from_sqlite_if_needed,
 )
-from app.database.repositories import (
+from app.database.sqlite import (
+    DatabaseConnectionManager,
+    SqliteConnectionManager,
     SqliteReminderRepository,
     SqliteSystemSettingsRepository,
     SqliteUserRepository,
@@ -20,6 +21,7 @@ __all__ = [
     "PostgresReminderRepository",
     "PostgresSystemSettingsRepository",
     "PostgresUserRepository",
+    "SqliteConnectionManager",
     "SqliteReminderRepository",
     "SqliteSystemSettingsRepository",
     "SqliteUserRepository",

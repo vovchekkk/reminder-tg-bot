@@ -1,7 +1,6 @@
 from typing import Any, Dict, List, Optional
 
 from app.config import DATABASE_URL, DB_PATH, logger
-from app.database.connection import DatabaseConnectionManager
 from app.database.postgres import (
     PostgresConnectionManager,
     PostgresReminderRepository,
@@ -9,7 +8,8 @@ from app.database.postgres import (
     PostgresUserRepository,
     migrate_from_sqlite_if_needed,
 )
-from app.database.repositories import (
+from app.database.sqlite import (
+    SqliteConnectionManager,
     SqliteReminderRepository,
     SqliteSystemSettingsRepository,
     SqliteUserRepository,
@@ -19,6 +19,7 @@ from app.domain.interfaces import (
     ISystemSettingsRepository,
     IUserRepository,
 )
+
 
 
 class Database:
@@ -39,10 +40,11 @@ class Database:
             migrate_from_sqlite_if_needed(db_path, self.connection)
         else:
             logger.info(f"Initializing SQLite database: {db_path}")
-            self.connection = DatabaseConnectionManager(db_path)
+            self.connection = SqliteConnectionManager(db_path)
             self.users = SqliteUserRepository(self.connection)
             self.reminders = SqliteReminderRepository(self.connection)
             self.system = SqliteSystemSettingsRepository(self.connection)
+
 
 
     # Делегирование для обратной совместимости
